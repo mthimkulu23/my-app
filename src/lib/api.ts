@@ -37,6 +37,19 @@ export type ChatMessage = {
   createdAt: string;
 };
 
+export type CallLogEntry = {
+  id: string;
+  from: string;
+  to: string;
+  direction: 'inbound' | 'outbound';
+  mode: 'live' | 'demo';
+  status: 'initiated' | 'ringing' | 'in-progress' | 'completed' | 'busy' | 'failed' | 'no-answer' | 'canceled';
+  startedAt: string;
+  answeredAt: string | null;
+  endedAt: string | null;
+  durationSeconds: number;
+};
+
 const apiUrl = process.env.EXPO_PUBLIC_API_URL?.trim().replace(/\/+$/, '');
 
 export async function apiRequest<T>(path: string, options: RequestInit = {}, token?: string): Promise<T> {

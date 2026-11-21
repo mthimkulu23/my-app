@@ -1,10 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, Vibration, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useOnlineAgents } from '@/hooks/use-online-agents';
-import { apiRequest } from '@/lib/api';
+import { apiRequest, type CallLogEntry } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { connectVoice } from '@/lib/voice';
 import type { AudioRouteType, VoiceAudioDevice, VoiceSession, VoiceStatus } from '@/lib/voice.types';
@@ -25,6 +25,9 @@ type PhoneCall = {
   id: string;
   destination: string;
   demo: boolean;
+  demoRings?: number;
+  logId?: string;
+  startedAt?: number;
   status: VoiceStatus;
   muted: boolean;
   mutedBeforeHold: boolean;
@@ -77,7 +80,7 @@ function playDialTone(digit: string) {
 
 function playDemoRingback() {
   if (Platform.OS !== 'web') {
-    Vibration.vibrate([0, 250, 600, 250]);
+    Vibration.vibrate(350);
     return;
   }
   const webAudio = globalThis as typeof globalThis & { webkitAudioContext?: typeof AudioContext };
@@ -91,15 +94,15 @@ function playDemoRingback() {
   const gain = context.createGain();
   gain.gain.setValueAtTime(0.0001, now);
   gain.gain.exponentialRampToValueAtTime(0.055, now + 0.015);
-  gain.gain.setValueAtTime(0.055, now + 0.85);
-  gain.gain.exponentialRampToValueAtTime(0.0001, now + 1.05);
+  gain.gain.setValueAtTime(0.055, now + 0.28);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.35);
   gain.connect(context.destination);
   for (const frequency of [440, 480]) {
     const oscillator = context.createOscillator();
     oscillator.frequency.value = frequency;
     oscillator.connect(gain);
     oscillator.start(now);
-    oscillator.stop(now + 1.06);
+    oscillator.stop(now + 0.36);
   }
 }
 
@@ -113,18 +116,74 @@ export default function HomeScreen() {
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('CRM');
   const [queueMenuOpen, setQueueMenuOpen] = useState(false);
   const [calls, setCalls] = useState<PhoneCall[]>([]);
+  const [callHistory, setCallHistory] = useState<CallLogEntry[]>([]);
+  const [showCallHistory, setShowCallHistory] = useState(false);
+  const [callHistoryLoading, setCallHistoryLoading] = useState(false);
+  const [callHistoryError, setCallHistoryError] = useState('');
   const [activeCallId, setActiveCallId] = useState<string | null>(null);
   const [addingCall, setAddingCall] = useState(false);
   const [dialing, setDialing] = useState(false);
   const [callError, setCallError] = useState('');
   const [doNotDisturb, setDoNotDisturb] = useState(false);
   const [demoMode, setDemoMode] = useState(true);
+  const demoRingTimers = useRef(new Map<string, ReturnType<typeof setInterval>>());
   const activeCall = calls.find((call) => call.id === activeCallId && call.status !== 'ended') ?? null;
   const liveCalls = calls.filter((call) => call.status !== 'ended');
   const callControlsReady = Boolean(activeCall?.demo || (activeCall?.session && activeCall.status === 'connected'));
 
+  useEffect(() => () => {
+    for (const timer of demoRingTimers.current.values()) clearInterval(timer);
+    demoRingTimers.current.clear();
+    if (Platform.OS !== 'web') Vibration.cancel();
+  }, []);
+
+  useEffect(() => {
+    if (!token) return;
+    let active = true;
+    const refresh = async () => {
+      try {
+        const result = await apiRequest<CallLogEntry[]>('/api/calls', {}, token);
+        if (active) {
+          setCallHistory(result);
+          setCallHistoryError('');
+        }
+      } catch (error) {
+        if (active) setCallHistoryError(error instanceof Error ? error.message : 'Unable to load call history.');
+      } finally {
+        if (active) setCallHistoryLoading(false);
+      }
+    };
+    setCallHistoryLoading(true);
+    void refresh();
+    const interval = setInterval(refresh, 15_000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [token]);
+
   function updateCall(callId: string, patch: Partial<PhoneCall>) {
     setCalls((current) => current.map((call) => call.id === callId ? { ...call, ...patch } : call));
+  }
+
+  async function updateDemoCallLog(logId: string, status: 'in-progress' | 'completed' | 'canceled', durationSeconds?: number) {
+    if (!token) return;
+    try {
+      await apiRequest(`/api/calls/demo/${logId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status, ...(durationSeconds === undefined ? {} : { durationSeconds }) }),
+      }, token);
+      const timestamp = new Date().toISOString();
+      setCallHistory((current) => current.map((entry) => entry.id === logId ? {
+        ...entry,
+        status,
+        answeredAt: status === 'in-progress' ? timestamp : entry.answeredAt,
+        endedAt: status === 'completed' || status === 'canceled' ? timestamp : entry.endedAt,
+        durationSeconds: durationSeconds ?? entry.durationSeconds,
+      } : entry));
+    } catch (error) {
+      setCallHistoryError(error instanceof Error ? error.message : 'Unable to update demo call history.');
+    }
   }
 
   function workspaceContent() {
@@ -156,21 +215,29 @@ export default function HomeScreen() {
 
   async function startCall() {
     const destination = number.trim();
-    if (!destination || dialing) return;
+    if (!token || !destination || dialing) return;
     const previousCall = activeCall;
     setDialing(true);
     setCallError('');
     try {
-      if (previousCall?.session && !previousCall.held) {
+      if (previousCall && !previousCall.held) {
         await setCallHeld(previousCall, true);
       }
 
       const callId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       if (demoMode) {
+        const demoLog = await apiRequest<CallLogEntry>('/api/calls/demo', {
+          method: 'POST',
+          body: JSON.stringify({ to: destination }),
+        }, token);
+        setCallHistory((current) => [demoLog, ...current]);
         setCalls((current) => [...current, {
           id: callId,
           destination,
           demo: true,
+          demoRings: 1,
+          logId: demoLog.id,
+          startedAt: Date.now(),
           status: 'ringing',
           muted: false,
           mutedBeforeHold: false,
@@ -183,9 +250,20 @@ export default function HomeScreen() {
         setNumber('');
         setAddingCall(false);
         playDemoRingback();
-        setTimeout(() => {
-          setCalls((current) => current.map((call) => call.id === callId && call.status === 'ringing' ? { ...call, status: 'connected' } : call));
-        }, 2600);
+        let ringCount = 1;
+        const ringTimer = setInterval(() => {
+          ringCount += 1;
+          playDemoRingback();
+          if (ringCount >= 10) {
+            clearInterval(ringTimer);
+            demoRingTimers.current.delete(callId);
+            updateCall(callId, { status: 'connected', demoRings: ringCount });
+            void updateDemoCallLog(demoLog.id, 'in-progress');
+          } else {
+            updateCall(callId, { demoRings: ringCount });
+          }
+        }, 1200);
+        demoRingTimers.current.set(callId, ringTimer);
         return;
       }
       if (!token) throw new Error('Sign in before placing a call.');
@@ -278,7 +356,6 @@ export default function HomeScreen() {
   }
 
   async function toggleHold(call: PhoneCall) {
-    if (!call.session) return;
     try {
       await setCallHeld(call, !call.held);
     } catch (error) {
@@ -323,10 +400,10 @@ export default function HomeScreen() {
   }
 
   async function switchCall(nextCall: PhoneCall) {
-    if (activeCall?.session && activeCall.id !== nextCall.id && !activeCall.held) {
+    if (activeCall && activeCall.id !== nextCall.id && !activeCall.held) {
       await setCallHeld(activeCall, true);
     }
-    if (nextCall.session && nextCall.held) {
+    if (nextCall.held) {
       await setCallHeld(nextCall, false);
     }
     setActiveCallId(nextCall.id);
@@ -334,6 +411,19 @@ export default function HomeScreen() {
   }
 
   async function endCall(call: PhoneCall) {
+    const ringTimer = demoRingTimers.current.get(call.id);
+    if (ringTimer) {
+      clearInterval(ringTimer);
+      demoRingTimers.current.delete(call.id);
+      if (Platform.OS !== 'web') Vibration.cancel();
+    }
+    if (call.demo && call.logId) {
+      const completed = call.status === 'connected';
+      const durationSeconds = completed && call.startedAt
+        ? Math.max(0, Math.floor((Date.now() - call.startedAt) / 1000))
+        : 0;
+      await updateDemoCallLog(call.logId, completed ? 'completed' : 'canceled', durationSeconds);
+    }
     await call.session?.disconnect().catch((error) => {
       setCallError(error instanceof Error ? error.message : 'Could not end the call.');
     });
@@ -406,8 +496,12 @@ export default function HomeScreen() {
 
         <View style={[styles.phonePanel, compact && styles.compactPhonePanel]}>
           <View style={[styles.phoneTabs, compact && styles.compactPhoneTabs]}>
-            <View style={styles.phoneTab}><Text style={styles.phoneTabText}>Calls ({liveCalls.length})</Text></View>
-            <View style={[styles.phoneTab, styles.phoneTabActive]}><Text style={styles.phoneTabTextActive}>Phone</Text></View>
+            <Pressable accessibilityRole="button" onPress={() => setShowCallHistory(true)} style={[styles.phoneTab, showCallHistory && styles.phoneTabActive]}>
+              <Text style={showCallHistory ? styles.phoneTabTextActive : styles.phoneTabText}>Calls ({callHistory.length})</Text>
+            </Pressable>
+            <Pressable accessibilityRole="button" onPress={() => setShowCallHistory(false)} style={[styles.phoneTab, !showCallHistory && styles.phoneTabActive]}>
+              <Text style={!showCallHistory ? styles.phoneTabTextActive : styles.phoneTabText}>Phone</Text>
+            </Pressable>
           </View>
           <View style={[styles.phoneTools, compact && styles.compactPhoneTools]}>
             <View style={[styles.onlineDot, demoMode ? styles.softphoneOnline : styles.softphoneOffline]} />
@@ -415,9 +509,9 @@ export default function HomeScreen() {
             {activeCall && <Text style={styles.callTimerLabel}>{activeCall.destination}</Text>}
           </View>
 
-          {activeCall && !addingCall ? (
+          {activeCall && !addingCall && !showCallHistory ? (
             <View style={styles.activeCall}>
-              <Text style={styles.activeCallStatus}>{activeCall.held ? 'On hold' : activeCall.status === 'connected' ? activeCall.demo ? 'Demo connected' : 'Connected' : activeCall.status === 'ended' ? 'Call ended' : 'Ringing'}</Text>
+              <Text style={styles.activeCallStatus}>{activeCall.held ? 'On hold' : activeCall.demo && activeCall.status === 'ringing' ? `Ringing ${activeCall.demoRings ?? 1}/10` : activeCall.status === 'connected' ? activeCall.demo ? 'Demo connected' : 'Connected' : activeCall.status === 'ended' ? 'Call ended' : 'Calling'}</Text>
               <Text style={styles.activeCallNumber}>{activeCall.destination}</Text>
               {activeCall.demo && <Text style={styles.demoHint}>DEMO SIMULATION · NO PHONE NETWORK</Text>}
               {liveCalls.length > 1 && (
@@ -451,6 +545,30 @@ export default function HomeScreen() {
               </View>
               {activeCall.demo ? <Text style={styles.webHoldHint}>All controls are simulated; no audio call is placed.</Text> : activeCall.session?.holdMode === 'mute' ? <Text style={styles.webHoldHint}>Browser hold mutes your microphone; mobile hold uses Twilio call hold.</Text> : null}
             </View>
+          ) : showCallHistory ? (
+            <ScrollView style={styles.callHistoryList} contentContainerStyle={styles.callHistoryContent}>
+              {callHistoryLoading && callHistory.length === 0 ? <Text style={styles.callHistoryHint}>Loading calls…</Text> : null}
+              {!callHistoryLoading && callHistory.length === 0 ? <Text style={styles.callHistoryHint}>No calls recorded yet.</Text> : null}
+              {callHistory.map((call) => {
+                const target = call.direction === 'outbound' ? call.to : call.from;
+                const direction = call.direction === 'outbound' ? 'Outgoing' : 'Incoming';
+                const status = call.status.replace('-', ' ');
+                const time = new Date(call.startedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+                return (
+                  <View key={call.id} style={styles.callHistoryRow}>
+                    <View style={styles.callHistoryMain}>
+                      <Text numberOfLines={1} style={styles.callHistoryNumber}>{target}</Text>
+                      <Text style={styles.callHistoryMeta}>{direction} · {status}{call.mode === 'demo' ? ' · Demo' : ''}</Text>
+                    </View>
+                    <View style={styles.callHistoryDetails}>
+                      <Text style={styles.callHistoryTime}>{time}</Text>
+                      <Text style={styles.callHistoryDuration}>{call.durationSeconds ? `${Math.floor(call.durationSeconds / 60)}:${String(call.durationSeconds % 60).padStart(2, '0')}` : '—'}</Text>
+                    </View>
+                  </View>
+                );
+              })}
+              {!!callHistoryError && <Text accessibilityRole="alert" style={styles.callHistoryError}>{callHistoryError}</Text>}
+            </ScrollView>
           ) : (
             <>
               {addingCall && activeCall && (

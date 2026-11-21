@@ -386,7 +386,57 @@ app.post('/api/conversations/:conversationId/messages', requireAuth, asyncRoute(
 
 app.get('/api/calls', requireAuth, asyncRoute(async (req, res) => {
   const calls = await CallLog.find({ ownerId: req.userId }).sort({ startedAt: -1 }).limit(100).lean();
-  return res.json(calls.map(({ _id, ownerId, __v, ...call }) => ({ id: _id, ...call })));
+  return res.json(calls.map(({ _id, ownerId, __v, ...call }) => ({
+    id: String(_id),
+    direction: call.direction || 'outbound',
+    mode: call.mode || 'live',
+    ...call,
+  })));
+}));
+
+app.post('/api/calls/demo', requireAuth, asyncRoute(async (req, res) => {
+  const { to } = parse(z.object({ to: z.string().trim().min(1).max(64) }).strict(), req.body);
+  const call = await CallLog.create({
+    ownerId: req.userId,
+    callSid: `DEMO-${new mongoose.Types.ObjectId()}`,
+    from: 'Demo mode',
+    to,
+    direction: 'outbound',
+    mode: 'demo',
+    status: 'ringing',
+    startedAt: new Date(),
+  });
+  return res.status(201).json({
+    id: String(call.id),
+    from: call.from,
+    to: call.to,
+    direction: call.direction,
+    mode: call.mode,
+    status: call.status,
+    startedAt: call.startedAt,
+    answeredAt: call.answeredAt,
+    endedAt: call.endedAt,
+    durationSeconds: call.durationSeconds,
+  });
+}));
+
+app.patch('/api/calls/demo/:callId', requireAuth, asyncRoute(async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.callId)) return res.status(404).json({ error: 'Call not found' });
+  const body = parse(z.object({
+    status: z.enum(['in-progress', 'completed', 'canceled']),
+    durationSeconds: z.number().int().min(0).optional(),
+  }).strict(), req.body);
+  const update = { status: body.status };
+  if (body.status === 'in-progress') update.answeredAt = new Date();
+  if (body.status === 'completed' || body.status === 'canceled') update.endedAt = new Date();
+  if (body.durationSeconds !== undefined) update.durationSeconds = body.durationSeconds;
+  const call = await CallLog.findOneAndUpdate(
+    { _id: req.params.callId, ownerId: req.userId, mode: 'demo' },
+    { $set: update },
+    { new: true },
+  ).select('_id status');
+  if (!call) return res.status(404).json({ error: 'Call not found' });
+  return res.json({ id: String(call.id), status: call.status });
 }));
 
 app.post('/api/calls/token', requireAuth, callLimiter, asyncRoute(async (req, res) => {
@@ -418,7 +468,7 @@ app.post('/webhooks/twilio/voice', asyncRoute(async (req, res) => {
   if (!callSid.startsWith('CA')) return res.status(400).type('text/plain').send('Invalid call SID');
   await CallLog.updateOne(
     { callSid },
-    { $setOnInsert: { ownerId: user.id, callSid, from: process.env.TWILIO_CALLER_ID, to: destination, status: 'initiated', startedAt: new Date() } },
+    { $setOnInsert: { ownerId: user.id, callSid, from: process.env.TWILIO_CALLER_ID, to: destination, direction: 'outbound', mode: 'live', status: 'initiated', startedAt: new Date() } },
     { upsert: true },
   );
   const response = new twilio.twiml.VoiceResponse();

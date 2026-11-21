@@ -42,6 +42,8 @@ const callLogSchema = new mongoose.Schema({
   callSid: { type: String, required: true, unique: true },
   from: { type: String, required: true },
   to: { type: String, required: true },
+  direction: { type: String, enum: ['inbound', 'outbound'], default: 'outbound', required: true },
+  mode: { type: String, enum: ['live', 'demo'], default: 'live', required: true },
   status: {
     type: String,
     enum: ['initiated', 'ringing', 'in-progress', 'completed', 'busy', 'failed', 'no-answer', 'canceled'],
