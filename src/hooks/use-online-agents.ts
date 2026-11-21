@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
 
-import { apiRequest, type OnlineAgent } from '@/lib/api';
+import { apiRequest, type AgentDirectoryEntry } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 
 export function useOnlineAgents() {
   const { token } = useAuth();
-  const [agents, setAgents] = useState<OnlineAgent[]>([]);
+  const [agents, setAgents] = useState<AgentDirectoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -18,7 +18,7 @@ export function useOnlineAgents() {
         return;
       }
       try {
-        const result = await apiRequest<OnlineAgent[]>('/api/agents', {}, token);
+        const result = await apiRequest<AgentDirectoryEntry[]>('/api/agents', {}, token);
         if (active) {
           setAgents(result);
           setError('');

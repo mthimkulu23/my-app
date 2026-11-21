@@ -132,12 +132,18 @@ app.get('/api/me', requireAuth, asyncRoute(async (req, res) => {
 
 app.get('/api/agents', requireAuth, asyncRoute(async (req, res) => {
   const onlineSince = new Date(Date.now() - 90_000);
-  const agents = await User.find({
-    role: 'agent',
-    'presence.online': true,
-    'presence.lastSeenAt': { $gte: onlineSince },
-  }).select('displayName presence.lastSeenAt').sort({ displayName: 1 }).lean();
-  return res.json(agents.map((agent) => ({ id: String(agent._id), displayName: agent.displayName, lastSeenAt: agent.presence?.lastSeenAt })));
+  const agents = await User.find({ role: 'agent' })
+    .select('displayName presence.online presence.lastSeenAt').sort({ displayName: 1 }).lean();
+  const directory = agents.map((agent) => {
+    const lastSeenAt = agent.presence?.lastSeenAt ?? null;
+    return {
+      id: String(agent._id),
+      displayName: agent.displayName,
+      online: Boolean(agent.presence?.online && lastSeenAt && lastSeenAt >= onlineSince),
+      lastSeenAt,
+    };
+  }).sort((left, right) => Number(right.online) - Number(left.online) || left.displayName.localeCompare(right.displayName));
+  return res.json(directory);
 }));
 
 app.put('/api/presence', requireAuth, asyncRoute(async (req, res) => {

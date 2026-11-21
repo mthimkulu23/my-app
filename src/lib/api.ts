@@ -5,10 +5,11 @@ export type AppUser = {
   role: 'customer' | 'agent';
 };
 
-export type OnlineAgent = {
+export type AgentDirectoryEntry = {
   id: string;
   displayName: string;
-  lastSeenAt: string;
+  online: boolean;
+  lastSeenAt: string | null;
 };
 
 export type ConversationParticipant = {

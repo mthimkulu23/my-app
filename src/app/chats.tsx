@@ -123,15 +123,16 @@ export default function ChatsScreen() {
         {showSidebar && (
           <ScrollView style={[styles.sidebar, wide && styles.sidebarWide]} contentContainerStyle={styles.sidebarContent}>
             <View style={styles.sectionHeading}>
-              <Text style={styles.sectionTitle}>Online agents</Text>
-              <Text style={styles.sectionCount}>{agents.length}</Text>
+              <Text style={styles.sectionTitle}>Agents</Text>
+              <Text style={styles.sectionCount}>{agents.filter((agent) => agent.online).length} online</Text>
             </View>
             {agentsLoading && agents.length === 0 ? <Text style={styles.hint}>Checking availability…</Text> : null}
-            {!agentsLoading && agents.length === 0 ? <Text style={styles.hint}>No agents are online.</Text> : null}
+            {!agentsLoading && agents.length === 0 ? <Text style={styles.hint}>No agent accounts are registered yet.</Text> : null}
             {agents.map((agent) => (
               <Pressable key={agent.id} onPress={() => { void startConversation(agent.id); }} style={styles.agentRow}>
-                <View style={styles.onlineDot} />
+                <View style={agent.online ? styles.onlineDot : styles.offlineDot} />
                 <Text numberOfLines={1} style={styles.rowName}>{agent.displayName}</Text>
+                <Text style={agent.online ? styles.agentOnlineText : styles.agentOfflineText}>{agent.online ? 'Online' : 'Offline'}</Text>
                 <Text style={styles.startLabel}>Message</Text>
               </Pressable>
             ))}
@@ -203,12 +204,12 @@ export default function ChatsScreen() {
               </Pressable>
             </View>
           </View>
-        ) : (
+        ) : wide ? (
           <View style={styles.noSelection}>
             <Text style={styles.emptyTitle}>Select a conversation</Text>
-            <Text style={styles.emptyText}>Choose an online agent or open a saved conversation.</Text>
+            <Text style={styles.emptyText}>Choose an agent or open a saved conversation.</Text>
           </View>
-        )}
+        ) : null}
       </View>
     </SafeAreaView>
   );
@@ -235,7 +236,10 @@ const styles = StyleSheet.create({
   hint: { color: muted, fontSize: 12, paddingVertical: 8 },
   agentRow: { minHeight: 42, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 8, borderRadius: 5, backgroundColor: '#F8FAFB' },
   onlineDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#2D9D65' },
+  offlineDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#A8B0B5' },
   rowName: { flex: 1, color: dark, fontSize: 13 },
+  agentOnlineText: { color: '#247A4C', fontSize: 10, fontWeight: '600' },
+  agentOfflineText: { color: muted, fontSize: 10 },
   startLabel: { color: blue, fontSize: 11, fontWeight: '600' },
   conversationRow: { minHeight: 54, justifyContent: 'center', gap: 3, paddingHorizontal: 9, borderRadius: 5 },
   conversationActive: { backgroundColor: '#EAF5FB' },
