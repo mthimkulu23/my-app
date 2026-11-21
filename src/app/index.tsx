@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, Vibration, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -18,6 +18,47 @@ const digits = [
 ];
 
 type WorkspaceTab = 'CRM' | 'Queues' | 'Agents';
+
+const dtmfFrequencies: Record<string, [number, number]> = {
+  '1': [697, 1209], '2': [697, 1336], '3': [697, 1477],
+  '4': [770, 1209], '5': [770, 1336], '6': [770, 1477],
+  '7': [852, 1209], '8': [852, 1336], '9': [852, 1477],
+  '*': [941, 1209], '0': [941, 1336], '#': [941, 1477],
+};
+
+let dialToneContext: AudioContext | null = null;
+
+function playDialTone(digit: string) {
+  const frequencies = dtmfFrequencies[digit];
+  if (!frequencies) return;
+  if (Platform.OS !== 'web') {
+    Vibration.vibrate(12);
+    return;
+  }
+
+  const webAudio = globalThis as typeof globalThis & { webkitAudioContext?: typeof AudioContext };
+  const AudioContextConstructor = webAudio.AudioContext ?? webAudio.webkitAudioContext;
+  if (!AudioContextConstructor) return;
+  dialToneContext ??= new AudioContextConstructor();
+  const context = dialToneContext;
+  void context.resume();
+
+  const now = context.currentTime;
+  const gain = context.createGain();
+  gain.gain.setValueAtTime(0.0001, now);
+  gain.gain.exponentialRampToValueAtTime(0.07, now + 0.008);
+  gain.gain.setValueAtTime(0.07, now + 0.09);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.13);
+  gain.connect(context.destination);
+
+  for (const frequency of frequencies) {
+    const oscillator = context.createOscillator();
+    oscillator.frequency.value = frequency;
+    oscillator.connect(gain);
+    oscillator.start(now);
+    oscillator.stop(now + 0.14);
+  }
+}
 
 export default function HomeScreen() {
   const { user, signOut } = useAuth();
@@ -150,7 +191,10 @@ export default function HomeScreen() {
                   <Pressable
                     key={digit}
                     accessibilityLabel={`Dial ${digit}`}
-                    onPress={() => setNumber((value) => value + digit)}
+                    onPress={() => {
+                      setNumber((value) => value + digit);
+                      playDialTone(digit);
+                    }}
                     style={({ pressed }) => [styles.digitKey, compact && styles.compactDigitKey, pressed && styles.digitKeyPressed]}>
                     <Text style={styles.digitText}>{digit}</Text>
                     {letters ? <Text style={styles.digitLetters}>{letters}</Text> : null}
