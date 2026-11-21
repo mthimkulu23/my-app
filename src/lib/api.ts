@@ -2,6 +2,13 @@ export type AppUser = {
   id: string;
   displayName: string;
   email: string;
+  role: 'customer' | 'agent';
+};
+
+export type OnlineAgent = {
+  id: string;
+  displayName: string;
+  lastSeenAt: string;
 };
 
 export type ConversationParticipant = {

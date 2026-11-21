@@ -4,6 +4,11 @@ const userSchema = new mongoose.Schema({
   displayName: { type: String, required: true, trim: true, maxlength: 80 },
   email: { type: String, required: true, unique: true, lowercase: true, trim: true },
   passwordHash: { type: String, required: true, select: false },
+  role: { type: String, enum: ['customer', 'agent'], default: 'customer', required: true },
+  presence: {
+    online: { type: Boolean, default: false },
+    lastSeenAt: { type: Date, default: null },
+  },
 }, { timestamps: true });
 
 const conversationSchema = new mongoose.Schema({
@@ -11,6 +16,10 @@ const conversationSchema = new mongoose.Schema({
   participantKey: { type: String, required: true, unique: true },
   lastMessageText: { type: String, default: '' },
   lastMessageAt: { type: Date, default: null },
+  queueName: { type: String, default: 'OtherInquiries_Queue', trim: true },
+  status: { type: String, enum: ['waiting', 'assigned', 'closed'], default: 'waiting' },
+  assignedAgentId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  customerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
 }, { timestamps: true });
 
 const messageSchema = new mongoose.Schema({

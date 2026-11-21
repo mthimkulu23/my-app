@@ -2,6 +2,9 @@ import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { useOnlineAgents } from '@/hooks/use-online-agents';
+import { useAuth } from '@/lib/auth';
+
 const blue = '#168FD0';
 const dark = '#34424B';
 const muted = '#7E8A92';
@@ -16,6 +19,8 @@ const digits = [
 type WorkspaceTab = 'CRM' | 'Queues' | 'Agents';
 
 export default function HomeScreen() {
+  const { user, signOut } = useAuth();
+  const { agents, loading: agentsLoading } = useOnlineAgents();
   const [number, setNumber] = useState('');
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('CRM');
   const [queueMenuOpen, setQueueMenuOpen] = useState(false);
@@ -36,9 +41,10 @@ export default function HomeScreen() {
     if (workspaceTab === 'Agents') {
       return (
         <View style={styles.infoContent}>
-          <Text style={styles.infoTitle}>Agents</Text>
-          <Text style={styles.infoLine}>HK · You</Text>
-          <Text style={styles.infoMeta}>2 agents signed in</Text>
+          <Text style={styles.infoTitle}>Agents online ({agents.length})</Text>
+          {agentsLoading && agents.length === 0 ? <Text style={styles.infoMeta}>Checking availability…</Text> : null}
+          {!agentsLoading && agents.length === 0 ? <Text style={styles.infoMeta}>No agents are online</Text> : null}
+          {agents.map((agent) => <Text key={agent.id} style={styles.infoLine}>{agent.displayName}</Text>)}
         </View>
       );
     }
@@ -53,15 +59,19 @@ export default function HomeScreen() {
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       <View style={styles.header}>
         <View style={styles.brandIcon}><Text style={styles.brandIconText}>A</Text></View>
-        <Text style={styles.headerTitle}>Agent panel</Text>
-        <View style={styles.agentBadge}><Text style={styles.agentInitials}>HK</Text></View>
+        <Text style={styles.headerTitle}>{user?.role === 'agent' ? 'Agent panel' : 'Workspace'}</Text>
+        <Text numberOfLines={1} style={styles.currentUser}>{user?.displayName}</Text>
+        <View style={styles.agentBadge}><Text style={styles.agentInitials}>{user?.displayName.slice(0, 2).toUpperCase()}</Text></View>
+        <Pressable accessibilityRole="button" onPress={() => { void signOut(); }} style={styles.signOutButton}>
+          <Text style={styles.signOutText}>Sign out</Text>
+        </Pressable>
       </View>
 
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <View style={styles.queueHeader}>
           <View style={styles.queueHeadingRow}>
             <Text style={styles.queueHeading}>Voice Queues</Text>
-            <Text style={styles.loggedIn}>(Logged in: 1)</Text>
+            <Text style={styles.loggedIn}>(Agents online: {agents.length})</Text>
           </View>
           <Pressable
             accessibilityRole="button"
@@ -176,8 +186,11 @@ const styles = StyleSheet.create({
   brandIcon: { width: 30, height: 30, borderRadius: 6, backgroundColor: blue, alignItems: 'center', justifyContent: 'center' },
   brandIconText: { color: '#FFFFFF', fontSize: 16, fontWeight: '700' },
   headerTitle: { color: dark, flex: 1, fontSize: 15, fontWeight: '600' },
+  currentUser: { maxWidth: 90, color: muted, fontSize: 11 },
   agentBadge: { width: 34, height: 34, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F4F5F6', borderRadius: 5 },
   agentInitials: { color: dark, fontSize: 12, fontWeight: '600' },
+  signOutButton: { minHeight: 36, justifyContent: 'center', paddingHorizontal: 6 },
+  signOutText: { color: blue, fontSize: 11, fontWeight: '600' },
   content: { padding: 14, gap: 12, paddingBottom: 22 },
   queueHeader: { zIndex: 2 },
   queueHeadingRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 6 },

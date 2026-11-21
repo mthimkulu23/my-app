@@ -15,6 +15,7 @@ const port = Number(process.env.PORT || 4000);
 const jwtSecret = process.env.JWT_SECRET;
 const publicUrl = process.env.PUBLIC_URL?.replace(/\/$/, '');
 const allowedOrigins = (process.env.CORS_ORIGINS || '').split(',').map((origin) => origin.trim()).filter(Boolean);
+const agentEmails = new Set((process.env.AGENT_EMAILS || '').split(',').map((email) => email.trim().toLowerCase()).filter(Boolean));
 
 if (!process.env.MONGODB_URI) throw new Error('MONGODB_URI is required');
 if (!jwtSecret || jwtSecret.length < 32) throw new Error('JWT_SECRET must be at least 32 characters');
@@ -27,7 +28,9 @@ app.set('trust proxy', process.env.TRUST_PROXY === 'true' ? 1 : false);
 app.use(helmet());
 app.use(cors({
   origin(origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    const isLocalDevelopmentOrigin = process.env.NODE_ENV !== 'production'
+      && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin || '');
+    if (!origin || allowedOrigins.includes(origin) || isLocalDevelopmentOrigin) return callback(null, true);
     return callback(new Error('Origin is not allowed'));
   },
 }));
@@ -103,8 +106,10 @@ app.post('/auth/register', authLimiter, asyncRoute(async (req, res) => {
     displayName: body.displayName,
     email,
     passwordHash: await bcrypt.hash(body.password, 12),
+    role: agentEmails.has(email) ? 'agent' : 'customer',
+    presence: { online: true, lastSeenAt: new Date() },
   });
-  return res.status(201).json({ token: issueSession(user), user: { id: user.id, displayName: user.displayName, email: user.email } });
+  return res.status(201).json({ token: issueSession(user), user: { id: user.id, displayName: user.displayName, email: user.email, role: user.role } });
 }));
 
 app.post('/auth/login', authLimiter, asyncRoute(async (req, res) => {
@@ -113,13 +118,39 @@ app.post('/auth/login', authLimiter, asyncRoute(async (req, res) => {
   if (!user || !(await bcrypt.compare(body.password, user.passwordHash))) {
     return res.status(401).json({ error: 'Email or password is incorrect' });
   }
-  return res.json({ token: issueSession(user), user: { id: user.id, displayName: user.displayName, email: user.email } });
+  if (agentEmails.has(user.email)) user.role = 'agent';
+  user.presence = { online: true, lastSeenAt: new Date() };
+  await user.save();
+  return res.json({ token: issueSession(user), user: { id: user.id, displayName: user.displayName, email: user.email, role: user.role } });
 }));
 
 app.get('/api/me', requireAuth, asyncRoute(async (req, res) => {
-  const user = await User.findById(req.userId).select('displayName email');
+  const user = await User.findById(req.userId).select('displayName email role');
   if (!user) return res.status(401).json({ error: 'Account no longer exists' });
-  return res.json({ id: user.id, displayName: user.displayName, email: user.email });
+  return res.json({ id: user.id, displayName: user.displayName, email: user.email, role: user.role });
+}));
+
+app.get('/api/agents', requireAuth, asyncRoute(async (req, res) => {
+  const onlineSince = new Date(Date.now() - 90_000);
+  const agents = await User.find({
+    role: 'agent',
+    'presence.online': true,
+    'presence.lastSeenAt': { $gte: onlineSince },
+  }).select('displayName presence.lastSeenAt').sort({ displayName: 1 }).lean();
+  return res.json(agents.map((agent) => ({ id: String(agent._id), displayName: agent.displayName, lastSeenAt: agent.presence?.lastSeenAt })));
+}));
+
+app.put('/api/presence', requireAuth, asyncRoute(async (req, res) => {
+  const user = await User.findByIdAndUpdate(req.userId, {
+    $set: { 'presence.online': true, 'presence.lastSeenAt': new Date() },
+  }, { new: true }).select('_id');
+  if (!user) return res.status(401).json({ error: 'Account no longer exists' });
+  return res.sendStatus(204);
+}));
+
+app.post('/api/presence/offline', requireAuth, asyncRoute(async (req, res) => {
+  await User.findByIdAndUpdate(req.userId, { $set: { 'presence.online': false } });
+  return res.sendStatus(204);
 }));
 
 app.get('/api/conversations', requireAuth, asyncRoute(async (req, res) => {
@@ -135,8 +166,13 @@ app.get('/api/conversations', requireAuth, asyncRoute(async (req, res) => {
 }));
 
 app.post('/api/conversations', requireAuth, asyncRoute(async (req, res) => {
-  const { email } = parse(z.object({ email: z.email().max(254) }).strict(), req.body);
-  const peer = await User.findOne({ email: email.toLowerCase() }).select('_id displayName');
+  const body = parse(z.union([
+    z.object({ userId: z.string().min(1) }).strict(),
+    z.object({ email: z.email().max(254) }).strict(),
+  ]), req.body);
+  const peer = 'userId' in body
+    ? (mongoose.isValidObjectId(body.userId) ? await User.findById(body.userId).select('_id displayName') : null)
+    : await User.findOne({ email: body.email.toLowerCase() }).select('_id displayName');
   if (!peer) return res.status(404).json({ error: 'No account found for that email' });
   if (peer.id === req.userId) return res.status(400).json({ error: 'You cannot start a conversation with yourself' });
   const participantIds = [req.userId, peer.id].sort();
@@ -176,7 +212,8 @@ app.post('/api/conversations/:conversationId/messages', requireAuth, asyncRoute(
   conversation.lastMessageText = text;
   conversation.lastMessageAt = message.createdAt;
   await conversation.save();
-  return res.status(201).json({ id: message.id, senderId: req.userId, text, createdAt: message.createdAt });
+  const sender = await User.findById(req.userId).select('displayName');
+  return res.status(201).json({ id: message.id, senderId: req.userId, senderName: sender.displayName, text, createdAt: message.createdAt });
 }));
 
 app.get('/api/calls', requireAuth, asyncRoute(async (req, res) => {

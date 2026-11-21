@@ -6,20 +6,23 @@ import {
     TabTrigger,
     TabTriggerSlotProps,
 } from 'expo-router/ui';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { Pressable, PressableProps, StyleSheet, useWindowDimensions, View } from 'react-native';
 
 import { MaxContentWidth, Spacing } from '@/constants/theme';
 import { ThemedText } from './themed-text';
 import { ThemedView } from './themed-view';
 
 export default function AppTabs() {
+  const { width } = useWindowDimensions();
+  const desktop = width >= 760;
+
   return (
     <Tabs>
-      <TabSlot style={{ height: '100%' }} />
+      <TabSlot style={desktop ? styles.desktopSlot : styles.mobileSlot} />
       <TabList asChild>
-        <CustomTabList>
-          <TabTrigger name="home" href="/" asChild>
-            <TabButton>Messages</TabButton>
+        <CustomTabList desktop={desktop}>
+          <TabTrigger name="index" href="/" asChild>
+            <TabButton>Calls</TabButton>
           </TabTrigger>
           <TabTrigger name="chats" href="/chats" asChild>
             <TabButton>Chats</TabButton>
@@ -34,7 +37,7 @@ export function TabButton({ children, isFocused, ...props }: TabTriggerSlotProps
   const { ref, ...pressableProps } = props;
   void ref;
   return (
-    <Pressable {...pressableProps} style={({ pressed }) => pressed && styles.pressed}>
+    <Pressable {...(pressableProps as PressableProps)} style={({ pressed }) => pressed && styles.pressed}>
       <ThemedView
         type={isFocused ? 'backgroundSelected' : 'backgroundElement'}
         style={styles.tabButtonView}>
@@ -46,14 +49,11 @@ export function TabButton({ children, isFocused, ...props }: TabTriggerSlotProps
   );
 }
 
-export function CustomTabList(props: TabListProps) {
+export function CustomTabList({ desktop, ...props }: TabListProps & { desktop: boolean }) {
   return (
-    <View {...props} style={styles.tabListContainer}>
-      <ThemedView type="backgroundElement" style={styles.innerContainer}>
-        <ThemedText type="smallBold" style={styles.brandText}>
-          Agent panel
-        </ThemedText>
-
+    <View {...props} style={[styles.tabListContainer, desktop ? styles.desktopTabList : styles.mobileTabList]}>
+      <ThemedView type="backgroundElement" style={[styles.innerContainer, desktop ? styles.desktopInnerContainer : styles.mobileInnerContainer]}>
+        <ThemedText type="smallBold" style={styles.brandText}>Relay</ThemedText>
         {props.children}
       </ThemedView>
     </View>
@@ -61,33 +61,39 @@ export function CustomTabList(props: TabListProps) {
 }
 
 const styles = StyleSheet.create({
-  tabListContainer: {
-    position: 'absolute',
+  tabListContainer: { position: 'absolute', zIndex: 2 },
+  mobileTabList: {
     width: '100%',
-    padding: Spacing.three,
+    bottom: 0,
+    padding: Spacing.two,
     justifyContent: 'center',
     alignItems: 'center',
-    flexDirection: 'row',
   },
-  innerContainer: {
-    paddingVertical: Spacing.two,
-    paddingHorizontal: Spacing.five,
+  desktopTabList: {
+    top: 0,
+    bottom: 0,
+    left: 0,
+    width: 220,
+    padding: Spacing.three,
+    justifyContent: 'flex-start',
+    alignItems: 'stretch',
+  },
+  mobileSlot: { height: '100%', marginBottom: 64 },
+  desktopSlot: { height: '100%', marginLeft: 220 },
+  innerContainer: { paddingVertical: Spacing.two, paddingHorizontal: Spacing.five, flexGrow: 1, gap: Spacing.two },
+  mobileInnerContainer: {
     borderRadius: Spacing.five,
     flexDirection: 'row',
     alignItems: 'center',
-    flexGrow: 1,
-    gap: Spacing.two,
     maxWidth: MaxContentWidth,
   },
-  brandText: {
-    marginRight: 'auto',
+  desktopInnerContainer: {
+    borderRadius: Spacing.two,
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    padding: Spacing.four,
   },
-  pressed: {
-    opacity: 0.7,
-  },
-  tabButtonView: {
-    paddingVertical: Spacing.one,
-    paddingHorizontal: Spacing.three,
-    borderRadius: Spacing.three,
-  },
+  brandText: { marginRight: 'auto', marginBottom: 16 },
+  pressed: { opacity: 0.7 },
+  tabButtonView: { minHeight: 40, paddingVertical: Spacing.two, paddingHorizontal: Spacing.three, borderRadius: Spacing.two },
 });

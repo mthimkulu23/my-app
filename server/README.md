@@ -5,6 +5,7 @@ This service owns MongoDB access, user authentication, chat persistence, Twilio 
 ## Local setup
 
 1. Copy `.env.example` to `.env` and set `MONGODB_URI` and a randomly generated `JWT_SECRET` of at least 32 characters.
+	Set `AGENT_EMAILS` to a comma-separated list of trusted agent email addresses. Users on this list receive the agent role when they register or next sign in; all other registrations are customers.
 2. Set up a Twilio API key, Voice TwiML App, and Twilio phone number. Configure the TwiML App's Voice URL as `https://<public-api-host>/webhooks/twilio/voice`.
 3. Configure `TWILIO_ACCOUNT_SID`, `TWILIO_API_KEY_SID`, `TWILIO_API_KEY_SECRET`, `TWILIO_AUTH_TOKEN`, `TWILIO_TWIML_APP_SID`, and `TWILIO_CALLER_ID` on the server.
 4. Expose the local API through an HTTPS tunnel for Twilio webhooks and set `PUBLIC_URL` to that exact HTTPS origin. Twilio signs webhook requests against this URL.

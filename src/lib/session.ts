@@ -1,17 +1,16 @@
 import { Platform } from 'react-native';
 
 const sessionKey = 'relay.session';
-let webSession: string | null = null;
 
 export async function readSession(): Promise<string | null> {
-  if (Platform.OS === 'web') return webSession;
+  if (Platform.OS === 'web') return globalThis.localStorage?.getItem(sessionKey) ?? null;
   const SecureStore = await import('expo-secure-store');
   return SecureStore.getItemAsync(sessionKey);
 }
 
 export async function writeSession(token: string): Promise<void> {
   if (Platform.OS === 'web') {
-    webSession = token;
+    globalThis.localStorage?.setItem(sessionKey, token);
     return;
   }
   const SecureStore = await import('expo-secure-store');
@@ -20,7 +19,7 @@ export async function writeSession(token: string): Promise<void> {
 
 export async function clearSession(): Promise<void> {
   if (Platform.OS === 'web') {
-    webSession = null;
+    globalThis.localStorage?.removeItem(sessionKey);
     return;
   }
   const SecureStore = await import('expo-secure-store');
