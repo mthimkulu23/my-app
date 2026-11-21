@@ -2,6 +2,7 @@ import bcrypt from 'bcryptjs';
 import cors from 'cors';
 import 'dotenv/config';
 import express from 'express';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { rateLimit } from 'express-rate-limit';
 import helmet from 'helmet';
 import jwt from 'jsonwebtoken';
@@ -34,7 +35,12 @@ app.use(cors({
     return callback(new Error('Origin is not allowed'));
   },
 }));
-app.use(express.json({ limit: '16kb' }));
+app.use(express.json({
+  limit: '1mb',
+  verify(req, _res, buffer) {
+    req.rawBody = Buffer.from(buffer);
+  },
+}));
 app.use(express.urlencoded({ extended: false, limit: '16kb' }));
 
 const authLimiter = rateLimit({ windowMs: 60_000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false });
@@ -92,7 +98,136 @@ function verifyTwilioRequest(req) {
   }
 }
 
+function verifyWhatsAppRequest(req) {
+  const appSecret = process.env.META_APP_SECRET;
+  if (!appSecret) {
+    const error = new Error('WhatsApp webhook is not configured on the server');
+    error.status = 503;
+    throw error;
+  }
+  const signature = Buffer.from(req.get('x-hub-signature-256') || '');
+  const expected = Buffer.from(`sha256=${createHmac('sha256', appSecret).update(req.rawBody || Buffer.alloc(0)).digest('hex')}`);
+  if (signature.length !== expected.length || !timingSafeEqual(signature, expected)) {
+    const error = new Error('Invalid WhatsApp webhook signature');
+    error.status = 403;
+    throw error;
+  }
+}
+
+function getWhatsAppMessageText(message) {
+  if (message.type === 'text') return String(message.text?.body || '').trim();
+  if (message.type === 'button') return String(message.button?.text || message.button?.payload || 'Button reply');
+  if (message.type === 'interactive') {
+    return String(message.interactive?.button_reply?.title || message.interactive?.list_reply?.title || 'Interactive reply');
+  }
+  return `[${String(message.type || 'unsupported')} message received]`;
+}
+
+async function sendWhatsAppText(conversation, text) {
+  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+  const apiVersion = process.env.WHATSAPP_GRAPH_API_VERSION || 'v23.0';
+  const missing = [
+    ['WHATSAPP_PHONE_NUMBER_ID', phoneNumberId],
+    ['WHATSAPP_ACCESS_TOKEN', accessToken],
+  ].filter(([, value]) => !value).map(([name]) => name);
+  if (missing.length) {
+    const error = new Error(`WhatsApp sending is not configured: ${missing.join(', ')}`);
+    error.status = 503;
+    throw error;
+  }
+  if (!conversation.lastInboundAt || Date.now() - conversation.lastInboundAt.getTime() >= 24 * 60 * 60 * 1000) {
+    const error = new Error('The WhatsApp 24-hour reply window is closed; a template message is required.');
+    error.status = 400;
+    throw error;
+  }
+
+  const response = await fetch(`https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: conversation.externalContact.id,
+      type: 'text',
+      text: { body: text },
+    }),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(result.error?.message || `WhatsApp send failed (${response.status})`);
+    error.status = 502;
+    throw error;
+  }
+  return result.messages?.[0]?.id;
+}
+
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
+
+app.get('/webhooks/whatsapp', (req, res) => {
+  const verifyToken = process.env.WHATSAPP_VERIFY_TOKEN;
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+  if (!verifyToken) return res.sendStatus(503);
+  if (mode === 'subscribe' && token === verifyToken && typeof challenge === 'string') return res.status(200).send(challenge);
+  return res.sendStatus(403);
+});
+
+app.post('/webhooks/whatsapp', asyncRoute(async (req, res) => {
+  verifyWhatsAppRequest(req);
+  const entries = Array.isArray(req.body?.entry) ? req.body.entry : [];
+  for (const entry of entries) {
+    for (const change of Array.isArray(entry.changes) ? entry.changes : []) {
+      if (change.field !== 'messages') continue;
+      const value = change.value || {};
+      const contacts = Array.isArray(value.contacts) ? value.contacts : [];
+      for (const message of Array.isArray(value.messages) ? value.messages : []) {
+        const externalId = String(message.from || '');
+        const providerMessageId = String(message.id || '');
+        const text = getWhatsAppMessageText(message);
+        if (!externalId || !providerMessageId || !text) continue;
+        const contact = contacts.find((candidate) => String(candidate.wa_id || '') === externalId);
+        const contactName = String(contact?.profile?.name || externalId).slice(0, 80);
+        const timestamp = Number(message.timestamp);
+        const createdAt = Number.isFinite(timestamp) ? new Date(timestamp * 1000) : new Date();
+        const participantKey = `whatsapp:${externalId}`;
+        const conversation = await Conversation.findOneAndUpdate(
+          { participantKey },
+          {
+            $set: { channel: 'whatsapp', externalContact: { id: externalId, displayName: contactName } },
+            $setOnInsert: { participantIds: [], participantKey },
+          },
+          { new: true, upsert: true, setDefaultsOnInsert: true },
+        );
+        const inserted = await Message.updateOne(
+          { providerMessageId },
+          {
+            $setOnInsert: {
+              conversationId: conversation.id,
+              senderName: contactName,
+              direction: 'inbound',
+              providerMessageId,
+              text: text.slice(0, 4000),
+              createdAt,
+              updatedAt: createdAt,
+            },
+          },
+          { upsert: true },
+        );
+        if (inserted.upsertedCount) {
+          await Conversation.updateOne({ _id: conversation.id }, {
+            $set: { lastMessageText: text.slice(0, 4000), lastMessageAt: createdAt, lastInboundAt: createdAt },
+          });
+        }
+      }
+    }
+  }
+  return res.sendStatus(200);
+}));
 
 app.post('/auth/register', authLimiter, asyncRoute(async (req, res) => {
   const body = parse(z.object({
@@ -160,12 +295,20 @@ app.post('/api/presence/offline', requireAuth, asyncRoute(async (req, res) => {
 }));
 
 app.get('/api/conversations', requireAuth, asyncRoute(async (req, res) => {
-  const conversations = await Conversation.find({ participantIds: req.userId })
+  const user = await User.findById(req.userId).select('role');
+  if (!user) return res.status(401).json({ error: 'Account no longer exists' });
+  const filter = user.role === 'agent'
+    ? { $or: [{ participantIds: req.userId }, { channel: 'whatsapp' }] }
+    : { participantIds: req.userId, channel: 'internal' };
+  const conversations = await Conversation.find(filter)
     .sort({ lastMessageAt: -1, updatedAt: -1 })
     .populate('participantIds', 'displayName');
   return res.json(conversations.map((conversation) => ({
     id: conversation.id,
     participants: conversation.participantIds,
+    channel: conversation.channel,
+    contactName: conversation.externalContact?.displayName || null,
+    contactAddress: conversation.externalContact?.id || null,
     lastMessageText: conversation.lastMessageText,
     lastMessageAt: conversation.lastMessageAt,
   })));
@@ -193,7 +336,12 @@ app.post('/api/conversations', requireAuth, asyncRoute(async (req, res) => {
 
 async function findAccessibleConversation(conversationId, userId) {
   if (!mongoose.isValidObjectId(conversationId)) return null;
-  return Conversation.findOne({ _id: conversationId, participantIds: userId });
+  const user = await User.findById(userId).select('role');
+  if (!user) return null;
+  const access = user.role === 'agent'
+    ? { $or: [{ participantIds: userId }, { channel: 'whatsapp' }] }
+    : { participantIds: userId, channel: 'internal' };
+  return Conversation.findOne({ _id: conversationId, ...access });
 }
 
 app.get('/api/conversations/:conversationId/messages', requireAuth, asyncRoute(async (req, res) => {
@@ -203,8 +351,9 @@ app.get('/api/conversations/:conversationId/messages', requireAuth, asyncRoute(a
     .sort({ createdAt: -1 }).limit(100).populate('senderId', 'displayName');
   return res.json(messages.reverse().map((message) => ({
     id: message.id,
-    senderId: message.senderId.id,
-    senderName: message.senderId.displayName,
+    senderId: message.senderId?.id || null,
+    senderName: message.senderId?.displayName || message.senderName,
+    direction: message.direction,
     text: message.text,
     createdAt: message.createdAt,
   })));
@@ -214,12 +363,21 @@ app.post('/api/conversations/:conversationId/messages', requireAuth, asyncRoute(
   const conversation = await findAccessibleConversation(req.params.conversationId, req.userId);
   if (!conversation) return res.status(404).json({ error: 'Conversation not found' });
   const { text } = parse(z.object({ text: z.string().trim().min(1).max(4000) }).strict(), req.body);
-  const message = await Message.create({ conversationId: conversation.id, senderId: req.userId, text });
+  const sender = await User.findById(req.userId).select('displayName role');
+  if (conversation.channel === 'whatsapp' && sender.role !== 'agent') return res.status(403).json({ error: 'Only agents can reply to WhatsApp conversations' });
+  const providerMessageId = conversation.channel === 'whatsapp' ? await sendWhatsAppText(conversation, text) : undefined;
+  const message = await Message.create({
+    conversationId: conversation.id,
+    senderId: req.userId,
+    senderName: sender.displayName,
+    direction: conversation.channel === 'whatsapp' ? 'outbound' : 'internal',
+    providerMessageId,
+    text,
+  });
   conversation.lastMessageText = text;
   conversation.lastMessageAt = message.createdAt;
   await conversation.save();
-  const sender = await User.findById(req.userId).select('displayName');
-  return res.status(201).json({ id: message.id, senderId: req.userId, senderName: sender.displayName, text, createdAt: message.createdAt });
+  return res.status(201).json({ id: message.id, senderId: req.userId, senderName: sender.displayName, direction: message.direction, text, createdAt: message.createdAt });
 }));
 
 app.get('/api/calls', requireAuth, asyncRoute(async (req, res) => {

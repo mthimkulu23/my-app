@@ -21,14 +21,18 @@ export type ConversationParticipant = {
 export type ConversationSummary = {
   id: string;
   participants: ConversationParticipant[];
+  channel: 'internal' | 'whatsapp';
+  contactName?: string | null;
+  contactAddress?: string | null;
   lastMessageText: string;
   lastMessageAt: string | null;
 };
 
 export type ChatMessage = {
   id: string;
-  senderId: string;
+  senderId: string | null;
   senderName: string;
+  direction: 'internal' | 'inbound' | 'outbound';
   text: string;
   createdAt: string;
 };

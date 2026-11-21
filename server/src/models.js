@@ -12,10 +12,16 @@ const userSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 const conversationSchema = new mongoose.Schema({
-  participantIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }],
+  participantIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   participantKey: { type: String, required: true, unique: true },
+  channel: { type: String, enum: ['internal', 'whatsapp'], default: 'internal', required: true },
+  externalContact: {
+    id: { type: String, default: null },
+    displayName: { type: String, default: null },
+  },
   lastMessageText: { type: String, default: '' },
   lastMessageAt: { type: Date, default: null },
+  lastInboundAt: { type: Date, default: null },
   queueName: { type: String, default: 'OtherInquiries_Queue', trim: true },
   status: { type: String, enum: ['waiting', 'assigned', 'closed'], default: 'waiting' },
   assignedAgentId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
@@ -24,7 +30,10 @@ const conversationSchema = new mongoose.Schema({
 
 const messageSchema = new mongoose.Schema({
   conversationId: { type: mongoose.Schema.Types.ObjectId, ref: 'Conversation', required: true, index: true },
-  senderId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  senderId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  senderName: { type: String, required: true, maxlength: 80 },
+  direction: { type: String, enum: ['internal', 'inbound', 'outbound'], default: 'internal', required: true },
+  providerMessageId: { type: String, unique: true, sparse: true },
   text: { type: String, required: true, maxlength: 4000 },
 }, { timestamps: true });
 

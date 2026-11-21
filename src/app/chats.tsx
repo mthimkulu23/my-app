@@ -146,9 +146,15 @@ export default function ChatsScreen() {
             {!loadingConversations && conversations.length === 0 ? <Text style={styles.hint}>Your saved conversations will appear here.</Text> : null}
             {conversations.map((conversation) => {
               const participant = conversation.participants.find((item) => (item.id ?? item._id) !== user?.id);
+              const conversationName = conversation.channel === 'whatsapp'
+                ? conversation.contactName || conversation.contactAddress || 'WhatsApp customer'
+                : participant?.displayName ?? 'Conversation';
               return (
                 <Pressable key={conversation.id} onPress={() => setActiveId(conversation.id)} style={[styles.conversationRow, activeId === conversation.id && styles.conversationActive]}>
-                  <Text numberOfLines={1} style={styles.rowName}>{participant?.displayName ?? 'Conversation'}</Text>
+                  <View style={styles.conversationTitleRow}>
+                    <Text numberOfLines={1} style={styles.rowName}>{conversationName}</Text>
+                    {conversation.channel === 'whatsapp' && <Text style={styles.channelTag}>WhatsApp</Text>}
+                  </View>
                   <Text numberOfLines={1} style={styles.preview}>{conversation.lastMessageText || 'No messages yet'}</Text>
                 </Pressable>
               );
@@ -161,7 +167,10 @@ export default function ChatsScreen() {
           <View style={styles.thread}>
             <View style={styles.threadHeader}>
               {!wide && <Pressable onPress={() => setActiveId('')} style={styles.backButton}><Text style={styles.backText}>Back</Text></Pressable>}
-              <Text numberOfLines={1} style={styles.threadTitle}>{otherParticipant?.displayName ?? 'Conversation'}</Text>
+              <View style={styles.threadHeading}>
+                <Text numberOfLines={1} style={styles.threadTitle}>{selected?.channel === 'whatsapp' ? selected.contactName || selected.contactAddress || 'WhatsApp customer' : otherParticipant?.displayName ?? 'Conversation'}</Text>
+                <Text style={styles.threadSubtitle}>{selected?.channel === 'whatsapp' ? `WhatsApp${selected.contactAddress ? ` · ${selected.contactAddress}` : ''}` : 'Relay chat'}</Text>
+              </View>
             </View>
             <ScrollView
               contentContainerStyle={styles.messageList}>
@@ -171,7 +180,7 @@ export default function ChatsScreen() {
                   <Text style={styles.emptyText}>Send a message to start the conversation.</Text>
                 </View>
               ) : messages.map((item) => {
-                const ownMessage = item.senderId === user?.id;
+                const ownMessage = item.direction === 'outbound' || item.senderId === user?.id;
                 return (
                   <View key={item.id} style={[styles.messageRow, ownMessage && styles.ownMessageRow]}>
                     <View style={[styles.bubble, ownMessage ? styles.ownBubble : styles.otherBubble]}>
@@ -243,11 +252,15 @@ const styles = StyleSheet.create({
   startLabel: { color: blue, fontSize: 11, fontWeight: '600' },
   conversationRow: { minHeight: 54, justifyContent: 'center', gap: 3, paddingHorizontal: 9, borderRadius: 5 },
   conversationActive: { backgroundColor: '#EAF5FB' },
+  conversationTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   preview: { color: muted, fontSize: 11 },
+  channelTag: { color: '#247A4C', fontSize: 9, fontWeight: '700' },
   errorText: { color: '#B42318', fontSize: 12, paddingVertical: 5 },
   thread: { flex: 1, minHeight: 0, backgroundColor: '#F8FAFB' },
-  threadHeader: { minHeight: 52, flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, backgroundColor: '#FFFFFF', borderBottomWidth: 1, borderBottomColor: border },
-  threadTitle: { flex: 1, color: dark, fontSize: 14, fontWeight: '600' },
+  threadHeader: { minHeight: 58, flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, backgroundColor: '#FFFFFF', borderBottomWidth: 1, borderBottomColor: border },
+  threadHeading: { flex: 1, gap: 2 },
+  threadTitle: { color: dark, fontSize: 14, fontWeight: '600' },
+  threadSubtitle: { color: muted, fontSize: 10 },
   backButton: { minHeight: 36, justifyContent: 'center', paddingRight: 6 },
   backText: { color: blue, fontSize: 13, fontWeight: '600' },
   messageList: { flexGrow: 1, justifyContent: 'flex-end', padding: 14, gap: 9 },
