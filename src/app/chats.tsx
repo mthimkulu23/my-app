@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useOnlineAgents } from '@/hooks/use-online-agents';
 import { apiRequest, type ChatMessage, type ConversationSummary } from '@/lib/api';
@@ -15,6 +16,7 @@ export default function ChatsScreen() {
   const { user, token, signOut } = useAuth();
   const { agents, loading: agentsLoading, error: agentsError } = useOnlineAgents();
   const { width } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   const wide = width >= 760;
   const [message, setMessage] = useState('');
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -119,7 +121,7 @@ export default function ChatsScreen() {
         </Pressable>
       </View>
 
-      <View style={[styles.body, wide && styles.bodyWide]}>
+      <View style={[styles.body, wide && styles.bodyWide, !wide && { paddingBottom: 72 + insets.bottom }]}>
         {showSidebar && (
           <ScrollView style={[styles.sidebar, wide && styles.sidebarWide]} contentContainerStyle={styles.sidebarContent}>
             <View style={styles.sectionHeading}>

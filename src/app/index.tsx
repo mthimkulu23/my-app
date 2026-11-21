@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useOnlineAgents } from '@/hooks/use-online-agents';
 import { useAuth } from '@/lib/auth';
@@ -21,6 +22,9 @@ type WorkspaceTab = 'CRM' | 'Queues' | 'Agents';
 export default function HomeScreen() {
   const { user, signOut } = useAuth();
   const { agents, loading: agentsLoading } = useOnlineAgents();
+  const { width } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const compact = width < 760;
   const [number, setNumber] = useState('');
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('CRM');
   const [queueMenuOpen, setQueueMenuOpen] = useState(false);
@@ -67,7 +71,7 @@ export default function HomeScreen() {
         </Pressable>
       </View>
 
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <ScrollView contentContainerStyle={[styles.content, compact && styles.compactContent, compact && { paddingBottom: 82 + insets.bottom }]} keyboardShouldPersistTaps="handled">
         <View style={styles.queueHeader}>
           <View style={styles.queueHeadingRow}>
             <Text style={styles.queueHeading}>Voice Queues</Text>
@@ -77,7 +81,7 @@ export default function HomeScreen() {
             accessibilityRole="button"
             accessibilityLabel="Choose voice queue"
             onPress={() => setQueueMenuOpen((open) => !open)}
-            style={styles.queueSelect}>
+            style={[styles.queueSelect, compact && styles.compactQueueSelect]}>
             <Text numberOfLines={1} style={styles.queueName}>OtherInquiries_Queue</Text>
             <Text style={styles.chevron}>⌄</Text>
           </Pressable>
@@ -89,26 +93,26 @@ export default function HomeScreen() {
           )}
         </View>
 
-        <View style={styles.workspaceTabs}>
+        <View style={[styles.workspaceTabs, compact && styles.compactWorkspaceTabs]}>
           {(['CRM', 'Queues', 'Agents'] as WorkspaceTab[]).map((tab) => (
             <Pressable
               key={tab}
               onPress={() => setWorkspaceTab(tab)}
-              style={[styles.workspaceTab, workspaceTab === tab && styles.workspaceTabActive]}>
+              style={[styles.workspaceTab, compact && styles.compactWorkspaceTab, workspaceTab === tab && styles.workspaceTabActive]}>
               <Text style={[styles.workspaceTabText, workspaceTab === tab && styles.workspaceTabTextActive]}>
                 {tab}{tab === 'Queues' ? ' (1)' : tab === 'Agents' ? ' (2)' : ''}
               </Text>
             </Pressable>
           ))}
         </View>
-        <View style={styles.workspacePanel}>{workspaceContent()}</View>
+        <View style={[styles.workspacePanel, compact && styles.compactWorkspacePanel]}>{workspaceContent()}</View>
 
-        <View style={styles.phonePanel}>
-          <View style={styles.phoneTabs}>
+        <View style={[styles.phonePanel, compact && styles.compactPhonePanel]}>
+          <View style={[styles.phoneTabs, compact && styles.compactPhoneTabs]}>
             <View style={styles.phoneTab}><Text style={styles.phoneTabText}>Calls (0)</Text></View>
             <View style={[styles.phoneTab, styles.phoneTabActive]}><Text style={styles.phoneTabTextActive}>Phone</Text></View>
           </View>
-          <View style={styles.phoneTools}>
+          <View style={[styles.phoneTools, compact && styles.compactPhoneTools]}>
             <Pressable accessibilityLabel="Contacts" style={styles.toolButton}><Text style={styles.toolGlyph}>◉</Text></Pressable>
             <Pressable accessibilityLabel="Call information" style={styles.toolButton}><Text style={styles.toolGlyph}>ⓘ</Text></Pressable>
             <Pressable accessibilityLabel="Headset" style={styles.toolButton}><Text style={styles.toolGlyph}>♧</Text></Pressable>
@@ -132,7 +136,7 @@ export default function HomeScreen() {
                   placeholder="Enter number or drag-in people"
                   placeholderTextColor="#B7BEC3"
                   keyboardType="phone-pad"
-                  style={styles.numberInput}
+                  style={[styles.numberInput, compact && styles.compactNumberInput]}
                   textAlign="center"
                 />
                 {number.length > 0 && (
@@ -141,13 +145,13 @@ export default function HomeScreen() {
                   </Pressable>
                 )}
               </View>
-              <View style={styles.keypad}>
+              <View style={[styles.keypad, compact && styles.compactKeypad]}>
                 {digits.map(([digit, letters]) => (
                   <Pressable
                     key={digit}
                     accessibilityLabel={`Dial ${digit}`}
                     onPress={() => setNumber((value) => value + digit)}
-                    style={({ pressed }) => [styles.digitKey, pressed && styles.digitKeyPressed]}>
+                    style={({ pressed }) => [styles.digitKey, compact && styles.compactDigitKey, pressed && styles.digitKeyPressed]}>
                     <Text style={styles.digitText}>{digit}</Text>
                     {letters ? <Text style={styles.digitLetters}>{letters}</Text> : null}
                   </Pressable>
@@ -157,13 +161,13 @@ export default function HomeScreen() {
                 accessibilityRole="button"
                 accessibilityLabel="Start call"
                 onPress={() => setCalling(true)}
-                style={styles.callButton}>
+                style={[styles.callButton, compact && styles.compactCallButton]}>
                 <Text style={styles.callGlyph}>☎</Text>
               </Pressable>
             </>
           )}
 
-          <View style={styles.phoneFooter}>
+          <View style={[styles.phoneFooter, compact && styles.compactPhoneFooter]}>
             <Pressable onPress={() => setNumber('')} style={styles.footerButton}>
               <Text style={styles.footerText}>ACCESS CODES</Text>
             </Pressable>
@@ -192,21 +196,26 @@ const styles = StyleSheet.create({
   signOutButton: { minHeight: 36, justifyContent: 'center', paddingHorizontal: 6 },
   signOutText: { color: blue, fontSize: 11, fontWeight: '600' },
   content: { padding: 14, gap: 12, paddingBottom: 22 },
+  compactContent: { padding: 10, gap: 8 },
   queueHeader: { zIndex: 2 },
   queueHeadingRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 6 },
   queueHeading: { color: blue, fontSize: 13, fontWeight: '500' },
   loggedIn: { color: blue, fontSize: 12 },
   queueSelect: { minHeight: 40, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 10, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: border, borderRadius: 4 },
+  compactQueueSelect: { minHeight: 34 },
   queueName: { flex: 1, color: '#505D66', fontSize: 12 },
   chevron: { color: muted, fontSize: 17, paddingLeft: 8 },
   queueOption: { height: 40, marginTop: 1, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: border },
   checkmark: { color: blue, fontSize: 15 },
   workspaceTabs: { flexDirection: 'row', gap: 4 },
+  compactWorkspaceTabs: { gap: 3 },
   workspaceTab: { minHeight: 38, flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: blue, borderRadius: 20 },
+  compactWorkspaceTab: { minHeight: 32 },
   workspaceTabActive: { backgroundColor: blue },
   workspaceTabText: { color: blue, fontSize: 12 },
   workspaceTabTextActive: { color: '#FFFFFF' },
   workspacePanel: { minHeight: 112, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: border, borderRadius: 8, overflow: 'hidden' },
+  compactWorkspacePanel: { minHeight: 72 },
   emptyCrm: { flex: 1, minHeight: 110, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F7F7F7' },
   emptyCrmText: { color: '#727F88', fontSize: 14 },
   infoContent: { flex: 1, justifyContent: 'center', paddingHorizontal: 18, gap: 6 },
@@ -215,24 +224,31 @@ const styles = StyleSheet.create({
   infoMeta: { color: muted, fontSize: 11 },
   phonePanel: { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: border, borderRadius: 8, overflow: 'hidden' },
   phoneTabs: { height: 38, flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: border },
+  compactPhoneTabs: { height: 32 },
   phoneTab: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   phoneTabActive: { backgroundColor: blue },
   phoneTabText: { color: '#48565E', fontSize: 12 },
   phoneTabTextActive: { color: '#FFFFFF', fontSize: 12 },
   phoneTools: { height: 34, flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', paddingHorizontal: 16, gap: 8 },
+  compactPhoneTools: { height: 25 },
   toolButton: { width: 23, height: 28, alignItems: 'center', justifyContent: 'center' },
   toolGlyph: { color: '#54B4E5', fontSize: 18 },
   numberEntry: { minHeight: 54, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginHorizontal: 14 },
   numberInput: { flex: 1, color: dark, fontSize: 14, paddingVertical: 8 },
+  compactNumberInput: { paddingVertical: 4 },
   deleteGlyph: { color: muted, fontSize: 19, paddingHorizontal: 8 },
   keypad: { width: 216, alignSelf: 'center', flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', rowGap: 8, columnGap: 10, marginTop: 2 },
+  compactKeypad: { width: 196, rowGap: 5, columnGap: 8 },
   digitKey: { width: 62, height: 51, borderRadius: 28, borderWidth: 1, borderColor: '#D5DADD', alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFFFFF' },
+  compactDigitKey: { width: 56, height: 43, borderRadius: 24 },
   digitKeyPressed: { backgroundColor: '#EFF8FC' },
   digitText: { color: blue, fontSize: 16, lineHeight: 19 },
   digitLetters: { color: '#89939A', fontSize: 7, lineHeight: 9 },
   callButton: { width: 54, height: 54, borderRadius: 27, alignItems: 'center', justifyContent: 'center', alignSelf: 'center', marginTop: 15, marginBottom: 13, backgroundColor: '#56B52B' },
+  compactCallButton: { width: 46, height: 46, borderRadius: 23, marginTop: 8, marginBottom: 8 },
   callGlyph: { color: '#FFFFFF', fontSize: 27, lineHeight: 32, transform: [{ rotate: '-35deg' }] },
   phoneFooter: { minHeight: 34, borderTopWidth: 1, borderTopColor: '#F0F1F2', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 11 },
+  compactPhoneFooter: { minHeight: 28 },
   footerButton: { minHeight: 32, justifyContent: 'center', paddingHorizontal: 5 },
   footerText: { color: '#747F86', fontSize: 8 },
   footerTextActive: { color: blue },
