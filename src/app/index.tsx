@@ -4,7 +4,10 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useOnlineAgents } from '@/hooks/use-online-agents';
+import { apiRequest } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
+import { connectVoice } from '@/lib/voice';
+import type { AudioRouteType, VoiceAudioDevice, VoiceSession, VoiceStatus } from '@/lib/voice.types';
 
 const blue = '#168FD0';
 const dark = '#34424B';
@@ -18,6 +21,18 @@ const digits = [
 ];
 
 type WorkspaceTab = 'CRM' | 'Queues' | 'Agents';
+type PhoneCall = {
+  id: string;
+  destination: string;
+  demo: boolean;
+  status: VoiceStatus;
+  muted: boolean;
+  mutedBeforeHold: boolean;
+  held: boolean;
+  route: AudioRouteType;
+  audioDevices: VoiceAudioDevice[];
+  session: VoiceSession | null;
+};
 
 const dtmfFrequencies: Record<string, [number, number]> = {
   '1': [697, 1209], '2': [697, 1336], '3': [697, 1477],
@@ -60,8 +75,36 @@ function playDialTone(digit: string) {
   }
 }
 
+function playDemoRingback() {
+  if (Platform.OS !== 'web') {
+    Vibration.vibrate([0, 250, 600, 250]);
+    return;
+  }
+  const webAudio = globalThis as typeof globalThis & { webkitAudioContext?: typeof AudioContext };
+  const AudioContextConstructor = webAudio.AudioContext ?? webAudio.webkitAudioContext;
+  if (!AudioContextConstructor) return;
+  dialToneContext ??= new AudioContextConstructor();
+  const context = dialToneContext;
+  void context.resume();
+
+  const now = context.currentTime;
+  const gain = context.createGain();
+  gain.gain.setValueAtTime(0.0001, now);
+  gain.gain.exponentialRampToValueAtTime(0.055, now + 0.015);
+  gain.gain.setValueAtTime(0.055, now + 0.85);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + 1.05);
+  gain.connect(context.destination);
+  for (const frequency of [440, 480]) {
+    const oscillator = context.createOscillator();
+    oscillator.frequency.value = frequency;
+    oscillator.connect(gain);
+    oscillator.start(now);
+    oscillator.stop(now + 1.06);
+  }
+}
+
 export default function HomeScreen() {
-  const { user, signOut } = useAuth();
+  const { user, token, signOut } = useAuth();
   const { agents, loading: agentsLoading } = useOnlineAgents();
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
@@ -69,9 +112,20 @@ export default function HomeScreen() {
   const [number, setNumber] = useState('');
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('CRM');
   const [queueMenuOpen, setQueueMenuOpen] = useState(false);
-  const [calling, setCalling] = useState(false);
+  const [calls, setCalls] = useState<PhoneCall[]>([]);
+  const [activeCallId, setActiveCallId] = useState<string | null>(null);
+  const [addingCall, setAddingCall] = useState(false);
+  const [dialing, setDialing] = useState(false);
+  const [callError, setCallError] = useState('');
   const [doNotDisturb, setDoNotDisturb] = useState(false);
-  const [softphone, setSoftphone] = useState(true);
+  const [demoMode, setDemoMode] = useState(true);
+  const activeCall = calls.find((call) => call.id === activeCallId && call.status !== 'ended') ?? null;
+  const liveCalls = calls.filter((call) => call.status !== 'ended');
+  const callControlsReady = Boolean(activeCall?.demo || (activeCall?.session && activeCall.status === 'connected'));
+
+  function updateCall(callId: string, patch: Partial<PhoneCall>) {
+    setCalls((current) => current.map((call) => call.id === callId ? { ...call, ...patch } : call));
+  }
 
   function workspaceContent() {
     if (workspaceTab === 'Queues') {
@@ -98,6 +152,208 @@ export default function HomeScreen() {
         <Text style={styles.emptyCrmText}>No CRM page available</Text>
       </View>
     );
+  }
+
+  async function startCall() {
+    const destination = number.trim();
+    if (!destination || dialing) return;
+    const previousCall = activeCall;
+    setDialing(true);
+    setCallError('');
+    try {
+      if (previousCall?.session && !previousCall.held) {
+        await setCallHeld(previousCall, true);
+      }
+
+      const callId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      if (demoMode) {
+        setCalls((current) => [...current, {
+          id: callId,
+          destination,
+          demo: true,
+          status: 'ringing',
+          muted: false,
+          mutedBeforeHold: false,
+          held: false,
+          route: 'speaker',
+          audioDevices: [],
+          session: null,
+        }]);
+        setActiveCallId(callId);
+        setNumber('');
+        setAddingCall(false);
+        playDemoRingback();
+        setTimeout(() => {
+          setCalls((current) => current.map((call) => call.id === callId && call.status === 'ringing' ? { ...call, status: 'connected' } : call));
+        }, 2600);
+        return;
+      }
+      if (!token) throw new Error('Sign in before placing a call.');
+
+      setCalls((current) => [...current, {
+        id: callId,
+        destination,
+        demo: false,
+        status: 'connecting',
+        muted: false,
+        mutedBeforeHold: false,
+        held: false,
+        route: Platform.OS === 'web' ? 'speaker' : 'earpiece',
+        audioDevices: [],
+        session: null,
+      }]);
+      setActiveCallId(callId);
+
+      const result = await apiRequest<{ token: string }>('/api/calls/token', {
+        method: 'POST',
+        body: JSON.stringify({}),
+      }, token);
+      const session = await connectVoice(result.token, destination, callId, (status) => {
+        updateCall(callId, { status });
+        if (status === 'ended') setActiveCallId((current) => current === callId ? null : current);
+      }, setCallError);
+      const audioDevices = await session.getAudioDevices().catch(() => []);
+      updateCall(callId, { session, audioDevices });
+      setNumber('');
+      setAddingCall(false);
+    } catch (requestError) {
+      setCalls((current) => current.filter((call) => call.status !== 'connecting'));
+      setActiveCallId(previousCall?.id ?? null);
+      if (previousCall?.demo && !previousCall.held) {
+        updateCall(previousCall.id, { held: false, mutedBeforeHold: false });
+      } else if (previousCall?.session && previousCall.held === false) {
+        await previousCall.session.setHeld(false).catch(() => undefined);
+        if (previousCall.session.holdMode === 'mute') await previousCall.session.setMuted(previousCall.muted).catch(() => undefined);
+        updateCall(previousCall.id, { held: false, muted: previousCall.muted, mutedBeforeHold: false });
+      }
+      setCallError(requestError instanceof Error ? requestError.message : 'Call could not be started.');
+    } finally {
+      setDialing(false);
+    }
+  }
+
+  async function toggleMute(call: PhoneCall) {
+    if (call.demo) {
+      updateCall(call.id, { muted: !call.muted });
+      return;
+    }
+    if (!call.session) return;
+    const muted = !call.muted;
+    try {
+      await call.session.setMuted(muted);
+      updateCall(call.id, { muted });
+    } catch (error) {
+      setCallError(error instanceof Error ? error.message : 'Could not change mute state.');
+    }
+  }
+
+  async function setCallHeld(call: PhoneCall, held: boolean) {
+    if (call.held === held) return;
+    if (call.demo) {
+      updateCall(call.id, { held, mutedBeforeHold: held ? call.muted : false });
+      return;
+    }
+    if (!call.session) return;
+    try {
+      if (held) {
+        await call.session.setHeld(true);
+        updateCall(call.id, {
+          held: true,
+          mutedBeforeHold: call.muted,
+          muted: call.session.holdMode === 'mute' ? true : call.muted,
+        });
+      } else {
+        await call.session.setHeld(false);
+        if (call.session.holdMode === 'mute') await call.session.setMuted(call.mutedBeforeHold);
+        updateCall(call.id, {
+          held: false,
+          muted: call.session.holdMode === 'mute' ? call.mutedBeforeHold : call.muted,
+          mutedBeforeHold: false,
+        });
+      }
+    } catch (error) {
+      setCallError(error instanceof Error ? error.message : 'Could not change hold state.');
+      throw error;
+    }
+  }
+
+  async function toggleHold(call: PhoneCall) {
+    if (!call.session) return;
+    try {
+      await setCallHeld(call, !call.held);
+    } catch (error) {
+      setCallError(error instanceof Error ? error.message : 'Could not change hold state.');
+    }
+  }
+
+  async function selectAudioRoute(call: PhoneCall, route: AudioRouteType) {
+    if (call.demo) {
+      updateCall(call.id, { route });
+      return;
+    }
+    if (!call.session) return;
+    try {
+      await call.session.setAudioRoute(route);
+      updateCall(call.id, { route });
+      setCallError('');
+    } catch (error) {
+      setCallError(error instanceof Error ? error.message : `Could not switch to ${route}.`);
+    }
+  }
+
+  async function chooseBluetooth(call: PhoneCall) {
+    if (call.demo) {
+      updateCall(call.id, { route: 'bluetooth' });
+      return;
+    }
+    if (!call.session) return;
+    try {
+      const audioDevices = await call.session.getAudioDevices();
+      updateCall(call.id, { audioDevices });
+      if (audioDevices.some((device) => device.type === 'bluetooth')) {
+        await selectAudioRoute(call, 'bluetooth');
+      } else if (Platform.OS === 'ios') {
+        await call.session.showAudioRoutePicker();
+      } else {
+        setCallError('Connect a Bluetooth audio device, then try again.');
+      }
+    } catch (error) {
+      setCallError(error instanceof Error ? error.message : 'Could not open Bluetooth audio routes.');
+    }
+  }
+
+  async function switchCall(nextCall: PhoneCall) {
+    if (activeCall?.session && activeCall.id !== nextCall.id && !activeCall.held) {
+      await setCallHeld(activeCall, true);
+    }
+    if (nextCall.session && nextCall.held) {
+      await setCallHeld(nextCall, false);
+    }
+    setActiveCallId(nextCall.id);
+    setAddingCall(false);
+  }
+
+  async function endCall(call: PhoneCall) {
+    await call.session?.disconnect().catch((error) => {
+      setCallError(error instanceof Error ? error.message : 'Could not end the call.');
+    });
+    updateCall(call.id, { status: 'ended' });
+    const nextCall = calls.find((candidate) => candidate.id !== call.id && candidate.status !== 'ended');
+    if (nextCall) {
+      if (nextCall.session && nextCall.held) await setCallHeld(nextCall, false);
+      setActiveCallId(nextCall.id);
+    } else {
+      setActiveCallId(null);
+    }
+  }
+
+  function pressDigit(digit: string) {
+    if (activeCall && !addingCall && activeCall.session) {
+      void activeCall.session.sendDigits(digit).catch((error) => setCallError(error instanceof Error ? error.message : 'Could not send keypad tone.'));
+      return;
+    }
+    setNumber((value) => value + digit);
+    playDialTone(digit);
   }
 
   return (
@@ -150,25 +406,59 @@ export default function HomeScreen() {
 
         <View style={[styles.phonePanel, compact && styles.compactPhonePanel]}>
           <View style={[styles.phoneTabs, compact && styles.compactPhoneTabs]}>
-            <View style={styles.phoneTab}><Text style={styles.phoneTabText}>Calls (0)</Text></View>
+            <View style={styles.phoneTab}><Text style={styles.phoneTabText}>Calls ({liveCalls.length})</Text></View>
             <View style={[styles.phoneTab, styles.phoneTabActive]}><Text style={styles.phoneTabTextActive}>Phone</Text></View>
           </View>
           <View style={[styles.phoneTools, compact && styles.compactPhoneTools]}>
-            <Pressable accessibilityLabel="Contacts" style={styles.toolButton}><Text style={styles.toolGlyph}>◉</Text></Pressable>
-            <Pressable accessibilityLabel="Call information" style={styles.toolButton}><Text style={styles.toolGlyph}>ⓘ</Text></Pressable>
-            <Pressable accessibilityLabel="Headset" style={styles.toolButton}><Text style={styles.toolGlyph}>♧</Text></Pressable>
+            <View style={[styles.onlineDot, demoMode ? styles.softphoneOnline : styles.softphoneOffline]} />
+            <Text style={styles.phoneReadyText}>{activeCall ? `${activeCall.demo ? 'DEMO · ' : ''}${activeCall.status.toUpperCase()}` : demoMode ? 'DEMO MODE' : 'LIVE SOFTPHONE'}</Text>
+            {activeCall && <Text style={styles.callTimerLabel}>{activeCall.destination}</Text>}
           </View>
 
-          {calling ? (
+          {activeCall && !addingCall ? (
             <View style={styles.activeCall}>
-              <Text style={styles.activeCallStatus}>Calling</Text>
-              <Text style={styles.activeCallNumber}>{number || 'Enter a number'}</Text>
-              <Pressable onPress={() => setCalling(false)} style={styles.endCallButton}>
-                <Text style={styles.endCallText}>End call</Text>
-              </Pressable>
+              <Text style={styles.activeCallStatus}>{activeCall.held ? 'On hold' : activeCall.status === 'connected' ? activeCall.demo ? 'Demo connected' : 'Connected' : activeCall.status === 'ended' ? 'Call ended' : 'Ringing'}</Text>
+              <Text style={styles.activeCallNumber}>{activeCall.destination}</Text>
+              {activeCall.demo && <Text style={styles.demoHint}>DEMO SIMULATION · NO PHONE NETWORK</Text>}
+              {liveCalls.length > 1 && (
+                <View style={styles.callSwitcher}>
+                  {liveCalls.map((call) => (
+                    <Pressable key={call.id} onPress={() => { void switchCall(call); }} style={[styles.callChip, call.id === activeCall.id && styles.callChipActive]}>
+                      <Text style={[styles.callChipText, call.id === activeCall.id && styles.callChipTextActive]}>{call.held ? 'Held · ' : ''}{call.destination}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              )}
+              <View style={styles.callControls}>
+                <Pressable accessibilityRole="button" accessibilityLabel={activeCall.muted ? 'Unmute call' : 'Mute call'} disabled={!callControlsReady} onPress={() => { void toggleMute(activeCall); }} style={[styles.callControl, activeCall.muted && styles.callControlActive, !callControlsReady && styles.disabledCallControl]}>
+                  <Text style={styles.callControlGlyph}>{activeCall.muted ? '×' : '●'}</Text><Text style={styles.callControlText}>{activeCall.muted ? 'Unmute' : 'Mute'}</Text>
+                </Pressable>
+                <Pressable accessibilityRole="button" accessibilityLabel={activeCall.held ? 'Resume call' : 'Hold call'} disabled={!callControlsReady} onPress={() => { void toggleHold(activeCall); }} style={[styles.callControl, activeCall.held && styles.callControlActive, !callControlsReady && styles.disabledCallControl]}>
+                  <Text style={styles.callControlGlyph}>{activeCall.held ? '▶' : 'Ⅱ'}</Text><Text style={styles.callControlText}>{activeCall.held ? 'Resume' : 'Hold'}</Text>
+                </Pressable>
+                <Pressable accessibilityRole="button" accessibilityLabel="Toggle speaker" disabled={!callControlsReady} onPress={() => { void selectAudioRoute(activeCall, activeCall.route === 'speaker' ? 'earpiece' : 'speaker'); }} style={[styles.callControl, activeCall.route === 'speaker' && styles.callControlActive, !callControlsReady && styles.disabledCallControl]}>
+                  <Text style={styles.callControlGlyph}>◖))</Text><Text style={styles.callControlText}>Speaker</Text>
+                </Pressable>
+                <Pressable accessibilityRole="button" accessibilityLabel="Bluetooth audio" disabled={!callControlsReady} onPress={() => { void chooseBluetooth(activeCall); }} style={[styles.callControl, activeCall.route === 'bluetooth' && styles.callControlActive, !callControlsReady && styles.disabledCallControl]}>
+                  <Text style={styles.callControlGlyph}>ᛒ</Text><Text style={styles.callControlText}>Bluetooth</Text>
+                </Pressable>
+                <Pressable accessibilityRole="button" accessibilityLabel="Add call" disabled={!callControlsReady} onPress={() => { setNumber(''); setAddingCall(true); setCallError(''); }} style={[styles.callControl, !callControlsReady && styles.disabledCallControl]}>
+                  <Text style={styles.callControlGlyph}>＋</Text><Text style={styles.callControlText}>Add call</Text>
+                </Pressable>
+                <Pressable accessibilityRole="button" accessibilityLabel="End call" disabled={!activeCall.demo && !activeCall.session} onPress={() => { void endCall(activeCall); }} style={[styles.callControl, styles.endCallControl, !activeCall.demo && !activeCall.session && styles.disabledCallControl]}>
+                  <Text style={styles.callControlGlyph}>☎</Text><Text style={styles.callControlText}>End</Text>
+                </Pressable>
+              </View>
+              {activeCall.demo ? <Text style={styles.webHoldHint}>All controls are simulated; no audio call is placed.</Text> : activeCall.session?.holdMode === 'mute' ? <Text style={styles.webHoldHint}>Browser hold mutes your microphone; mobile hold uses Twilio call hold.</Text> : null}
             </View>
           ) : (
             <>
+              {addingCall && activeCall && (
+                <View style={styles.addCallBanner}>
+                  <Text style={styles.addCallBannerText}>Current call will be held when the new call connects.</Text>
+                  <Pressable onPress={() => { setAddingCall(false); setNumber(''); }}><Text style={styles.cancelAddCall}>Cancel</Text></Pressable>
+                </View>
+              )}
               <View style={styles.numberEntry}>
                 <TextInput
                   accessibilityLabel="Phone number"
@@ -191,10 +481,7 @@ export default function HomeScreen() {
                   <Pressable
                     key={digit}
                     accessibilityLabel={`Dial ${digit}`}
-                    onPress={() => {
-                      setNumber((value) => value + digit);
-                      playDialTone(digit);
-                    }}
+                    onPress={() => pressDigit(digit)}
                     style={({ pressed }) => [styles.digitKey, compact && styles.compactDigitKey, pressed && styles.digitKeyPressed]}>
                     <Text style={styles.digitText}>{digit}</Text>
                     {letters ? <Text style={styles.digitLetters}>{letters}</Text> : null}
@@ -203,13 +490,16 @@ export default function HomeScreen() {
               </View>
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="Start call"
-                onPress={() => setCalling(true)}
-                style={[styles.callButton, compact && styles.compactCallButton]}>
-                <Text style={styles.callGlyph}>☎</Text>
+                accessibilityLabel={demoMode ? 'Start demo call' : 'Start call'}
+                disabled={!number.trim() || dialing}
+                onPress={() => { void startCall(); }}
+                style={[styles.callButton, compact && styles.compactCallButton, (!number.trim() || dialing) && styles.callButtonDisabled]}>
+                <Text style={styles.callGlyph}>{dialing ? '…' : '☎'}</Text>
               </Pressable>
             </>
           )}
+
+          {!!callError && <Text accessibilityRole="alert" style={styles.callError}>{callError}</Text>}
 
           <View style={[styles.phoneFooter, compact && styles.compactPhoneFooter]}>
             <Pressable onPress={() => setNumber('')} style={styles.footerButton}>
@@ -218,8 +508,8 @@ export default function HomeScreen() {
             <Pressable onPress={() => setDoNotDisturb((enabled) => !enabled)} style={styles.footerButton}>
               <Text style={[styles.footerText, doNotDisturb && styles.footerTextActive]}>{doNotDisturb ? 'DND ON' : 'DND'}</Text>
             </Pressable>
-            <Pressable onPress={() => setSoftphone((enabled) => !enabled)} style={styles.footerButton}>
-              <Text style={[styles.footerText, softphone && styles.footerTextActive]}>{softphone ? 'SOFTPHONE' : 'OFFLINE'}</Text>
+            <Pressable disabled={liveCalls.length > 0} onPress={() => setDemoMode((enabled) => !enabled)} style={styles.footerButton}>
+              <Text style={[styles.footerText, demoMode && styles.footerTextActive]}>{demoMode ? 'DEMO MODE' : 'LIVE CALLS'}</Text>
             </Pressable>
           </View>
         </View>
@@ -273,10 +563,13 @@ const styles = StyleSheet.create({
   phoneTabActive: { backgroundColor: blue },
   phoneTabText: { color: '#48565E', fontSize: 12 },
   phoneTabTextActive: { color: '#FFFFFF', fontSize: 12 },
-  phoneTools: { height: 34, flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', paddingHorizontal: 16, gap: 8 },
+  phoneTools: { height: 34, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, gap: 7 },
   compactPhoneTools: { height: 25 },
-  toolButton: { width: 23, height: 28, alignItems: 'center', justifyContent: 'center' },
-  toolGlyph: { color: '#54B4E5', fontSize: 18 },
+  onlineDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#2D9D65' },
+  softphoneOnline: { backgroundColor: '#2D9D65' },
+  softphoneOffline: { backgroundColor: '#A8B0B5' },
+  phoneReadyText: { color: muted, fontSize: 9, fontWeight: '700' },
+  callTimerLabel: { color: dark, fontSize: 10, marginLeft: 'auto' },
   numberEntry: { minHeight: 54, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginHorizontal: 14 },
   numberInput: { flex: 1, color: dark, fontSize: 14, paddingVertical: 8 },
   compactNumberInput: { paddingVertical: 4 },
@@ -296,9 +589,26 @@ const styles = StyleSheet.create({
   footerButton: { minHeight: 32, justifyContent: 'center', paddingHorizontal: 5 },
   footerText: { color: '#747F86', fontSize: 8 },
   footerTextActive: { color: blue },
-  activeCall: { minHeight: 270, alignItems: 'center', justifyContent: 'center', gap: 10 },
+  activeCall: { minHeight: 250, alignItems: 'center', justifyContent: 'center', gap: 10, paddingHorizontal: 16, paddingVertical: 16 },
   activeCallStatus: { color: muted, fontSize: 13 },
-  activeCallNumber: { color: dark, fontSize: 21, fontWeight: '500' },
-  endCallButton: { width: 120, height: 44, marginTop: 20, borderRadius: 24, backgroundColor: '#D9514B', alignItems: 'center', justifyContent: 'center' },
-  endCallText: { color: '#FFFFFF', fontSize: 13, fontWeight: '600' },
+  demoHint: { color: '#A0AAB1', fontSize: 9, fontWeight: '700' },
+  activeCallNumber: { color: dark, fontSize: 22, fontWeight: '600' },
+  callSwitcher: { flexDirection: 'row', justifyContent: 'center', flexWrap: 'wrap', gap: 6 },
+  callChip: { minHeight: 30, justifyContent: 'center', paddingHorizontal: 10, borderWidth: 1, borderColor: border, borderRadius: 16 },
+  callChipActive: { backgroundColor: '#E8F5FB', borderColor: blue },
+  callChipText: { color: muted, fontSize: 10 },
+  callChipTextActive: { color: blue, fontWeight: '600' },
+  callControls: { width: '100%', maxWidth: 330, flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 8 },
+  callControl: { width: '30%', minWidth: 88, minHeight: 62, alignItems: 'center', justifyContent: 'center', gap: 4, borderWidth: 1, borderColor: border, borderRadius: 8, backgroundColor: '#F8FAFB' },
+  disabledCallControl: { opacity: 0.45 },
+  callControlActive: { backgroundColor: '#E5F4FB', borderColor: blue },
+  endCallControl: { backgroundColor: '#D9514B', borderColor: '#D9514B' },
+  callControlGlyph: { color: dark, fontSize: 17, lineHeight: 20, fontWeight: '700' },
+  callControlText: { color: dark, fontSize: 10, fontWeight: '600' },
+  webHoldHint: { maxWidth: 300, color: muted, fontSize: 10, textAlign: 'center' },
+  addCallBanner: { minHeight: 36, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, marginHorizontal: 10, marginTop: 8, borderRadius: 5, backgroundColor: '#FFF8E8' },
+  addCallBannerText: { flex: 1, color: '#795B19', fontSize: 10 },
+  cancelAddCall: { color: blue, fontSize: 11, fontWeight: '600', paddingHorizontal: 8 },
+  callButtonDisabled: { opacity: 0.45 },
+  callError: { color: '#B42318', fontSize: 11, textAlign: 'center', paddingHorizontal: 10, paddingVertical: 6 },
 });

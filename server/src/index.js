@@ -79,9 +79,13 @@ function requireTwilioConfig() {
     'TWILIO_ACCOUNT_SID', 'TWILIO_API_KEY_SID', 'TWILIO_API_KEY_SECRET',
     'TWILIO_AUTH_TOKEN', 'TWILIO_TWIML_APP_SID', 'TWILIO_CALLER_ID', 'PUBLIC_URL',
   ];
-  const missing = names.filter((name) => !process.env[name]);
-  if (missing.length) {
-    const error = new Error(`Voice calling is not configured on the server: ${missing.join(', ')}`);
+  const unconfigured = names.filter((name) => {
+    const value = process.env[name]?.trim() || '';
+    return !value || /replace-with|x{4,}|example|placeholder/i.test(value)
+      || (name === 'TWILIO_CALLER_ID' && value === '+10000000000');
+  });
+  if (unconfigured.length) {
+    const error = new Error(`Voice calling is not configured with real Twilio values: ${unconfigured.join(', ')}`);
     error.status = 503;
     throw error;
   }

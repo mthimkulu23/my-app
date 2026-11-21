@@ -1,10 +1,11 @@
-import { Call, Voice } from '@twilio/voice-react-native-sdk';
+import { AudioDevice, Call, Voice } from '@twilio/voice-react-native-sdk';
 
-import { VoiceSession, VoiceStatus } from './voice.types';
+import { AudioRouteType, VoiceAudioDevice, VoiceSession, VoiceStatus } from './voice.types';
 
 export async function connectVoice(
   token: string,
   destination: string,
+  callId: string,
   onStatus: (status: VoiceStatus) => void,
   onError: (message: string) => void,
 ): Promise<VoiceSession> {
@@ -24,7 +25,26 @@ export async function connectVoice(
   call.on(Call.Event.Disconnected, () => onStatus('ended'));
 
   return {
+    id: callId,
+    holdMode: 'native',
     disconnect: () => call.disconnect(),
     setMuted: async (muted) => { await call.mute(muted); },
+    setHeld: async (held) => { await call.hold(held); },
+    getAudioDevices: async (): Promise<VoiceAudioDevice[]> => {
+      const { audioDevices } = await voice.getAudioDevices();
+      return audioDevices.map((device) => ({
+        id: device.uuid,
+        name: device.name,
+        type: device.type as AudioRouteType,
+      }));
+    },
+    setAudioRoute: async (route) => {
+      const { audioDevices } = await voice.getAudioDevices();
+      const device = audioDevices.find((audioDevice) => audioDevice.type === route);
+      if (!device) throw new Error(`No ${route} audio device is available.`);
+      await device.select();
+    },
+    showAudioRoutePicker: () => voice.showAvRoutePickerView(),
+    sendDigits: (digits) => call.sendDigits(digits),
   };
 }
