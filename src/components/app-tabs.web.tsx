@@ -6,10 +6,11 @@ import {
     TabTrigger,
     TabTriggerSlotProps,
 } from 'expo-router/ui';
-import { Pressable, PressableProps, StyleSheet, useWindowDimensions, View } from 'react-native';
+import { Pressable, PressableProps, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { MaxContentWidth, Spacing } from '@/constants/theme';
+import { useChatNotifications } from '@/lib/chat-notifications';
 import { ThemedText } from './themed-text';
 import { ThemedView } from './themed-view';
 
@@ -17,6 +18,7 @@ export default function AppTabs() {
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const desktop = width >= 760;
+  const { unreadCount } = useChatNotifications();
 
   return (
     <Tabs>
@@ -27,7 +29,7 @@ export default function AppTabs() {
             <TabButton>Calls</TabButton>
           </TabTrigger>
           <TabTrigger name="chats" href="/chats" asChild>
-            <TabButton>Chats</TabButton>
+            <TabButton badge={unreadCount}>Chats</TabButton>
           </TabTrigger>
         </CustomTabList>
       </TabList>
@@ -35,7 +37,7 @@ export default function AppTabs() {
   );
 }
 
-export function TabButton({ children, isFocused, ...props }: TabTriggerSlotProps) {
+export function TabButton({ children, isFocused, badge, ...props }: TabTriggerSlotProps & { badge?: number }) {
   const { ref, ...pressableProps } = props;
   void ref;
   return (
@@ -43,9 +45,16 @@ export function TabButton({ children, isFocused, ...props }: TabTriggerSlotProps
       <ThemedView
         type={isFocused ? 'backgroundSelected' : 'backgroundElement'}
         style={styles.tabButtonView}>
-        <ThemedText type="small" themeColor={isFocused ? 'text' : 'textSecondary'}>
-          {children}
-        </ThemedText>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <ThemedText type="small" themeColor={isFocused ? 'text' : 'textSecondary'}>
+            {children}
+          </ThemedText>
+          {Boolean(badge && badge > 0) && (
+            <View style={styles.unreadTabBadge}>
+              <Text style={styles.unreadTabBadgeText}>{badge}</Text>
+            </View>
+          )}
+        </View>
       </ThemedView>
     </Pressable>
   );
@@ -98,4 +107,18 @@ const styles = StyleSheet.create({
   brandText: { marginRight: 'auto', marginBottom: 16 },
   pressed: { opacity: 0.7 },
   tabButtonView: { minHeight: 40, paddingVertical: Spacing.two, paddingHorizontal: Spacing.three, borderRadius: Spacing.two },
+  unreadTabBadge: {
+    backgroundColor: '#25D366',
+    borderRadius: 9,
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  unreadTabBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: '800',
+  },
 });

@@ -7,6 +7,7 @@ import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import AppTabs from '@/components/app-tabs';
 import { AuthScreen } from '@/components/auth-screen';
 import { AuthProvider, useAuth } from '@/lib/auth';
+import { ChatNotificationProvider } from '@/lib/chat-notifications';
 
 // Only prevent auto hide on native devices
 if (Platform.OS !== 'web') {
@@ -24,7 +25,9 @@ export default function TabLayout() {
     <SafeAreaProvider>
       <AuthProvider>
         <AnimatedSplashOverlay />
-        <AuthenticatedApp />
+        <ChatNotificationProvider>
+          <AuthenticatedApp />
+        </ChatNotificationProvider>
       </AuthProvider>
     </SafeAreaProvider>
   );

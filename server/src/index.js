@@ -2,11 +2,13 @@ import bcrypt from 'bcryptjs';
 import cors from 'cors';
 import 'dotenv/config';
 import express from 'express';
-import { createHmac, timingSafeEqual } from 'node:crypto';
 import { rateLimit } from 'express-rate-limit';
 import helmet from 'helmet';
 import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
+import { createHmac, timingSafeEqual } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import twilio from 'twilio';
 import { z } from 'zod';
 import { AgentShift, CallLog, Conversation, Message, User } from './models.js';
@@ -18,6 +20,11 @@ const publicUrl = process.env.PUBLIC_URL?.replace(/\/$/, '');
 const allowedOrigins = (process.env.CORS_ORIGINS || '').split(',').map((origin) => origin.trim()).filter(Boolean);
 const agentEmails = new Set((process.env.AGENT_EMAILS || '').split(',').map((email) => email.trim().toLowerCase()).filter(Boolean));
 
+const uploadsDir = path.resolve('uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
 if (!process.env.MONGODB_URI) throw new Error('MONGODB_URI is required');
 if (!jwtSecret || jwtSecret.length < 32) throw new Error('JWT_SECRET must be at least 32 characters');
 if (process.env.NODE_ENV === 'production' && !publicUrl?.startsWith('https://')) {
@@ -26,7 +33,9 @@ if (process.env.NODE_ENV === 'production' && !publicUrl?.startsWith('https://'))
 
 app.disable('x-powered-by');
 app.set('trust proxy', process.env.TRUST_PROXY === 'true' ? 1 : false);
-app.use(helmet());
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+}));
 app.use(cors({
   origin(origin, callback) {
     const isLocalDevelopmentOrigin = process.env.NODE_ENV !== 'production'
@@ -35,8 +44,9 @@ app.use(cors({
     return callback(new Error('Origin is not allowed'));
   },
 }));
+app.use('/uploads', express.static(uploadsDir));
 app.use(express.json({
-  limit: '1mb',
+  limit: '25mb',
   verify(req, _res, buffer) {
     req.rawBody = Buffer.from(buffer);
   },
@@ -127,7 +137,51 @@ function getWhatsAppMessageText(message) {
   return `[${String(message.type || 'unsupported')} message received]`;
 }
 
-async function sendWhatsAppText(conversation, text) {
+async function downloadWhatsAppMedia(mediaId, mimeType, filenameHint) {
+  try {
+    const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+    const apiVersion = process.env.WHATSAPP_GRAPH_API_VERSION || 'v23.0';
+    if (!accessToken || !mediaId) return null;
+    const metaRes = await fetch(`https://graph.facebook.com/${apiVersion}/${mediaId}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!metaRes.ok) return null;
+    const metaData = await metaRes.json().catch(() => ({}));
+    if (!metaData.url) return null;
+
+    const mediaRes = await fetch(metaData.url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!mediaRes.ok) return null;
+    const arrayBuffer = await mediaRes.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    let ext = '';
+    if (filenameHint && path.extname(filenameHint)) {
+      ext = path.extname(filenameHint);
+    } else if (mimeType?.includes('jpeg') || mimeType?.includes('jpg')) ext = '.jpg';
+    else if (mimeType?.includes('png')) ext = '.png';
+    else if (mimeType?.includes('webp')) ext = '.webp';
+    else if (mimeType?.includes('pdf')) ext = '.pdf';
+    else if (mimeType?.includes('mp4')) ext = '.mp4';
+    else if (mimeType?.includes('ogg') || mimeType?.includes('audio')) ext = '.ogg';
+
+    const safeName = `wa_${mediaId}${ext}`;
+    const filePath = path.join(uploadsDir, safeName);
+    fs.writeFileSync(filePath, buffer);
+    return {
+      url: `/uploads/${safeName}`,
+      fileName: filenameHint || safeName,
+      fileType: mimeType || 'application/octet-stream',
+      fileSize: buffer.length,
+    };
+  } catch (err) {
+    console.error('Failed to download WhatsApp media:', err.message);
+    return null;
+  }
+}
+
+async function sendWhatsAppMessage(conversation, text, attachment) {
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
   const apiVersion = process.env.WHATSAPP_GRAPH_API_VERSION || 'v23.0';
@@ -146,19 +200,77 @@ async function sendWhatsAppText(conversation, text) {
     throw error;
   }
 
+  let fullAttachmentUrl = attachment?.url;
+  if (fullAttachmentUrl && !fullAttachmentUrl.startsWith('http://') && !fullAttachmentUrl.startsWith('https://')) {
+    const base = publicUrl || `http://localhost:${port}`;
+    fullAttachmentUrl = `${base}${fullAttachmentUrl.startsWith('/') ? '' : '/'}${fullAttachmentUrl}`;
+  }
+
+  let payload;
+  if (attachment) {
+    const mime = attachment.fileType || '';
+    if (mime.startsWith('image/')) {
+      payload = {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: conversation.externalContact.id,
+        type: 'image',
+        image: {
+          link: fullAttachmentUrl,
+          ...(text ? { caption: text } : {}),
+        },
+      };
+    } else if (mime.startsWith('video/')) {
+      payload = {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: conversation.externalContact.id,
+        type: 'video',
+        video: {
+          link: fullAttachmentUrl,
+          ...(text ? { caption: text } : {}),
+        },
+      };
+    } else if (mime.startsWith('audio/')) {
+      payload = {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: conversation.externalContact.id,
+        type: 'audio',
+        audio: {
+          link: fullAttachmentUrl,
+        },
+      };
+    } else {
+      payload = {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: conversation.externalContact.id,
+        type: 'document',
+        document: {
+          link: fullAttachmentUrl,
+          filename: attachment.fileName || 'document',
+          ...(text ? { caption: text } : {}),
+        },
+      };
+    }
+  } else {
+    payload = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: conversation.externalContact.id,
+      type: 'text',
+      text: { body: text },
+    };
+  }
+
   const response = await fetch(`https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      messaging_product: 'whatsapp',
-      recipient_type: 'individual',
-      to: conversation.externalContact.id,
-      type: 'text',
-      text: { body: text },
-    }),
+    body: JSON.stringify(payload),
   });
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -168,6 +280,8 @@ async function sendWhatsAppText(conversation, text) {
   }
   return result.messages?.[0]?.id;
 }
+
+const sendWhatsAppText = (conversation, text) => sendWhatsAppMessage(conversation, text, null);
 
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
@@ -192,8 +306,28 @@ app.post('/webhooks/whatsapp', asyncRoute(async (req, res) => {
       for (const message of Array.isArray(value.messages) ? value.messages : []) {
         const externalId = String(message.from || '');
         const providerMessageId = String(message.id || '');
-        const text = getWhatsAppMessageText(message);
-        if (!externalId || !providerMessageId || !text) continue;
+        if (!externalId || !providerMessageId) continue;
+
+        let attachment = null;
+        let text = getWhatsAppMessageText(message);
+
+        if (message.type === 'image' && message.image) {
+          text = message.image.caption || '[Photo]';
+          attachment = await downloadWhatsAppMedia(message.image.id, message.image.mime_type, 'photo.jpg');
+        } else if (message.type === 'document' && message.document) {
+          text = message.document.caption || `[Document: ${message.document.filename || 'file'}]`;
+          attachment = await downloadWhatsAppMedia(message.document.id, message.document.mime_type, message.document.filename);
+        } else if ((message.type === 'audio' || message.type === 'voice') && (message.audio || message.voice)) {
+          const audioObj = message.audio || message.voice;
+          text = '';
+          attachment = await downloadWhatsAppMedia(audioObj.id, audioObj.mime_type || 'audio/ogg', 'voice.ogg');
+        } else if (message.type === 'video' && message.video) {
+          text = message.video.caption || '[Video]';
+          attachment = await downloadWhatsAppMedia(message.video.id, message.video.mime_type, 'video.mp4');
+        }
+
+        if (!text && !attachment) continue;
+
         const contact = contacts.find((candidate) => String(candidate.wa_id || '') === externalId);
         const contactName = String(contact?.profile?.name || externalId).slice(0, 80);
         const timestamp = Number(message.timestamp);
@@ -216,6 +350,7 @@ app.post('/webhooks/whatsapp', asyncRoute(async (req, res) => {
               direction: 'inbound',
               providerMessageId,
               text: text.slice(0, 4000),
+              attachment,
               createdAt,
               updatedAt: createdAt,
             },
@@ -223,8 +358,20 @@ app.post('/webhooks/whatsapp', asyncRoute(async (req, res) => {
           { upsert: true },
         );
         if (inserted.upsertedCount) {
+          let preview = text;
+          if (attachment) {
+            if (attachment.fileType?.startsWith('audio/')) preview = '🎙️ Voice note';
+            else if (attachment.fileType?.startsWith('image/')) preview = '📷 Photo';
+            else preview = `📎 ${attachment.fileName || 'Attachment'}`;
+          }
           await Conversation.updateOne({ _id: conversation.id }, {
-            $set: { lastMessageText: text.slice(0, 4000), lastMessageAt: createdAt, lastInboundAt: createdAt },
+            $set: {
+              lastMessageText: (preview || 'New message').slice(0, 4000),
+              lastMessageAt: createdAt,
+              lastInboundAt: createdAt,
+              lastSenderId: null,
+              lastSenderName: contactName,
+            },
           });
         }
       }
@@ -371,15 +518,29 @@ app.get('/api/conversations', requireAuth, asyncRoute(async (req, res) => {
   const conversations = await Conversation.find(filter)
     .sort({ lastMessageAt: -1, updatedAt: -1 })
     .populate('participantIds', 'displayName');
-  return res.json(conversations.map((conversation) => ({
-    id: conversation.id,
-    participants: conversation.participantIds,
-    channel: conversation.channel,
-    contactName: conversation.externalContact?.displayName || null,
-    contactAddress: conversation.externalContact?.id || null,
-    lastMessageText: conversation.lastMessageText,
-    lastMessageAt: conversation.lastMessageAt,
-  })));
+
+  return res.json(conversations.map((conversation) => {
+    const userReadTime = conversation.lastReadAt?.get?.(String(req.userId)) || conversation.lastReadAt?.[String(req.userId)];
+    const isOwnMessage = conversation.lastSenderId && String(conversation.lastSenderId) === String(req.userId);
+    const hasUnread = Boolean(
+      conversation.lastMessageAt &&
+      !isOwnMessage &&
+      (!userReadTime || new Date(userReadTime).getTime() < new Date(conversation.lastMessageAt).getTime())
+    );
+    return {
+      id: conversation.id,
+      participants: conversation.participantIds,
+      channel: conversation.channel,
+      contactName: conversation.externalContact?.displayName || null,
+      contactAddress: conversation.externalContact?.id || null,
+      lastMessageText: conversation.lastMessageText,
+      lastMessageAt: conversation.lastMessageAt,
+      lastSenderId: conversation.lastSenderId ? String(conversation.lastSenderId) : null,
+      lastSenderName: conversation.lastSenderName || null,
+      unread: hasUnread,
+      unreadCount: hasUnread ? 1 : 0,
+    };
+  }));
 }));
 
 app.post('/api/conversations', requireAuth, asyncRoute(async (req, res) => {
@@ -399,7 +560,23 @@ app.post('/api/conversations', requireAuth, asyncRoute(async (req, res) => {
     { $setOnInsert: { participantIds, participantKey } },
     { new: true, upsert: true, setDefaultsOnInsert: true },
   ).populate('participantIds', 'displayName');
-  return res.status(200).json({ id: conversation.id, participants: conversation.participantIds, lastMessageText: conversation.lastMessageText, lastMessageAt: conversation.lastMessageAt });
+  return res.status(200).json({
+    id: conversation.id,
+    participants: conversation.participantIds,
+    lastMessageText: conversation.lastMessageText,
+    lastMessageAt: conversation.lastMessageAt,
+    unread: false,
+    unreadCount: 0,
+  });
+}));
+
+app.post('/api/conversations/:conversationId/read', requireAuth, asyncRoute(async (req, res) => {
+  const conversation = await findAccessibleConversation(req.params.conversationId, req.userId);
+  if (!conversation) return res.status(404).json({ error: 'Conversation not found' });
+  conversation.lastReadAt ??= new Map();
+  conversation.lastReadAt.set(String(req.userId), new Date());
+  await conversation.save();
+  return res.sendStatus(204);
 }));
 
 async function findAccessibleConversation(conversationId, userId) {
@@ -412,9 +589,42 @@ async function findAccessibleConversation(conversationId, userId) {
   return Conversation.findOne({ _id: conversationId, ...access });
 }
 
+app.post('/api/upload', requireAuth, asyncRoute(async (req, res) => {
+  const body = parse(z.object({
+    fileName: z.string().trim().min(1).max(255),
+    fileType: z.string().trim().min(1).max(100),
+    data: z.string().min(1),
+  }).strict(), req.body);
+
+  const cleanBase64 = body.data.replace(/^data:[^;]+;base64,/, '');
+  const buffer = Buffer.from(cleanBase64, 'base64');
+  if (buffer.length > 20 * 1024 * 1024) {
+    return res.status(400).json({ error: 'File size exceeds maximum allowed limit (20MB)' });
+  }
+
+  const ext = path.extname(body.fileName) || '';
+  const sanitizedBase = path.basename(body.fileName, ext).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40);
+  const uniqueName = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${sanitizedBase}${ext}`;
+  const filePath = path.join(uploadsDir, uniqueName);
+  fs.writeFileSync(filePath, buffer);
+
+  return res.status(201).json({
+    url: `/uploads/${uniqueName}`,
+    fileName: body.fileName,
+    fileType: body.fileType,
+    fileSize: buffer.length,
+  });
+}));
+
 app.get('/api/conversations/:conversationId/messages', requireAuth, asyncRoute(async (req, res) => {
   const conversation = await findAccessibleConversation(req.params.conversationId, req.userId);
   if (!conversation) return res.status(404).json({ error: 'Conversation not found' });
+
+  // Mark as read for this user
+  conversation.lastReadAt ??= new Map();
+  conversation.lastReadAt.set(String(req.userId), new Date());
+  await conversation.save();
+
   const messages = await Message.find({ conversationId: conversation.id })
     .sort({ createdAt: -1 }).limit(100).populate('senderId', 'displayName');
   return res.json(messages.reverse().map((message) => ({
@@ -422,7 +632,8 @@ app.get('/api/conversations/:conversationId/messages', requireAuth, asyncRoute(a
     senderId: message.senderId?.id || null,
     senderName: message.senderId?.displayName || message.senderName,
     direction: message.direction,
-    text: message.text,
+    text: message.text || '',
+    attachment: message.attachment || null,
     createdAt: message.createdAt,
   })));
 }));
@@ -430,10 +641,31 @@ app.get('/api/conversations/:conversationId/messages', requireAuth, asyncRoute(a
 app.post('/api/conversations/:conversationId/messages', requireAuth, asyncRoute(async (req, res) => {
   const conversation = await findAccessibleConversation(req.params.conversationId, req.userId);
   if (!conversation) return res.status(404).json({ error: 'Conversation not found' });
-  const { text } = parse(z.object({ text: z.string().trim().min(1).max(4000) }).strict(), req.body);
+  const body = parse(z.object({
+    text: z.string().max(4000).optional().default(''),
+    attachment: z.object({
+      url: z.string().min(1).max(1000),
+      fileName: z.string().max(255).optional().default('attachment'),
+      fileType: z.string().max(100).optional().default('application/octet-stream'),
+      fileSize: z.number().int().min(0).optional().default(0),
+    }).optional().nullable(),
+  }).strict(), req.body);
+
+  const text = (body.text || '').trim();
+  const attachment = body.attachment || null;
+  if (!text && !attachment) {
+    return res.status(400).json({ error: 'Cannot send an empty message' });
+  }
+
   const sender = await User.findById(req.userId).select('displayName role');
-  if (conversation.channel === 'whatsapp' && sender.role !== 'agent') return res.status(403).json({ error: 'Only agents can reply to WhatsApp conversations' });
-  const providerMessageId = conversation.channel === 'whatsapp' ? await sendWhatsAppText(conversation, text) : undefined;
+  if (conversation.channel === 'whatsapp' && sender.role !== 'agent') {
+    return res.status(403).json({ error: 'Only agents can reply to WhatsApp conversations' });
+  }
+
+  const providerMessageId = conversation.channel === 'whatsapp'
+    ? await sendWhatsAppMessage(conversation, text, attachment)
+    : undefined;
+
   const message = await Message.create({
     conversationId: conversation.id,
     senderId: req.userId,
@@ -441,11 +673,32 @@ app.post('/api/conversations/:conversationId/messages', requireAuth, asyncRoute(
     direction: conversation.channel === 'whatsapp' ? 'outbound' : 'internal',
     providerMessageId,
     text,
+    attachment,
   });
-  conversation.lastMessageText = text;
+
+  let preview = text;
+  if (attachment) {
+    if (attachment.fileType?.startsWith('audio/')) preview = '🎙️ Voice note';
+    else if (attachment.fileType?.startsWith('image/')) preview = '📷 Photo';
+    else preview = `📎 ${attachment.fileName || 'Attachment'}`;
+  }
+  conversation.lastMessageText = (preview || 'New message').slice(0, 4000);
   conversation.lastMessageAt = message.createdAt;
+  conversation.lastSenderId = req.userId;
+  conversation.lastSenderName = sender.displayName;
+  conversation.lastReadAt ??= new Map();
+  conversation.lastReadAt.set(String(req.userId), message.createdAt);
   await conversation.save();
-  return res.status(201).json({ id: message.id, senderId: req.userId, senderName: sender.displayName, direction: message.direction, text, createdAt: message.createdAt });
+
+  return res.status(201).json({
+    id: message.id,
+    senderId: req.userId,
+    senderName: sender.displayName,
+    direction: message.direction,
+    text,
+    attachment: message.attachment,
+    createdAt: message.createdAt,
+  });
 }));
 
 app.get('/api/calls', requireAuth, asyncRoute(async (req, res) => {

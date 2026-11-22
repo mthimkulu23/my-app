@@ -37,6 +37,17 @@ export type ConversationSummary = {
   contactAddress?: string | null;
   lastMessageText: string;
   lastMessageAt: string | null;
+  lastSenderId?: string | null;
+  lastSenderName?: string | null;
+  unread?: boolean;
+  unreadCount?: number;
+};
+
+export type MessageAttachment = {
+  url: string;
+  fileName: string;
+  fileType: string;
+  fileSize?: number;
 };
 
 export type ChatMessage = {
@@ -45,6 +56,7 @@ export type ChatMessage = {
   senderName: string;
   direction: 'internal' | 'inbound' | 'outbound';
   text: string;
+  attachment?: MessageAttachment | null;
   createdAt: string;
 };
 
@@ -84,4 +96,24 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}, tok
   const body = await response.json().catch(() => ({})) as { error?: string };
   if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
   return body as T;
+}
+
+export function getAssetUrl(path: string): string {
+  if (!path) return '';
+  if (path.startsWith('http://') || path.startsWith('https://')) return path;
+  const base = process.env.EXPO_PUBLIC_API_URL?.trim().replace(/\/+$/, '') || '';
+  return `${base}${path.startsWith('/') ? '' : '/'}${path}`;
+}
+
+export async function uploadAttachment(file: { fileName: string; fileType: string; data: string }, token: string): Promise<MessageAttachment> {
+  return apiRequest<MessageAttachment>('/api/upload', {
+    method: 'POST',
+    body: JSON.stringify(file),
+  }, token);
+}
+
+export async function markConversationRead(conversationId: string, token: string): Promise<void> {
+  await apiRequest<void>(`/api/conversations/${conversationId}/read`, {
+    method: 'POST',
+  }, token);
 }

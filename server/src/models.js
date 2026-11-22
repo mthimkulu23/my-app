@@ -21,6 +21,9 @@ const conversationSchema = new mongoose.Schema({
   },
   lastMessageText: { type: String, default: '' },
   lastMessageAt: { type: Date, default: null },
+  lastSenderId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  lastSenderName: { type: String, default: '' },
+  lastReadAt: { type: Map, of: Date, default: () => new Map() },
   lastInboundAt: { type: Date, default: null },
   queueName: { type: String, default: 'OtherInquiries_Queue', trim: true },
   status: { type: String, enum: ['waiting', 'assigned', 'closed'], default: 'waiting' },
@@ -28,13 +31,21 @@ const conversationSchema = new mongoose.Schema({
   customerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
 }, { timestamps: true });
 
+const attachmentSchema = new mongoose.Schema({
+  url: { type: String, required: true },
+  fileName: { type: String, default: 'attachment' },
+  fileType: { type: String, default: 'application/octet-stream' },
+  fileSize: { type: Number, default: 0 },
+}, { _id: false });
+
 const messageSchema = new mongoose.Schema({
   conversationId: { type: mongoose.Schema.Types.ObjectId, ref: 'Conversation', required: true, index: true },
   senderId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   senderName: { type: String, required: true, maxlength: 80 },
   direction: { type: String, enum: ['internal', 'inbound', 'outbound'], default: 'internal', required: true },
   providerMessageId: { type: String, unique: true, sparse: true },
-  text: { type: String, required: true, maxlength: 4000 },
+  text: { type: String, default: '', maxlength: 4000 },
+  attachment: { type: attachmentSchema, default: null },
 }, { timestamps: true });
 
 const callLogSchema = new mongoose.Schema({
