@@ -117,6 +117,7 @@ export function AuthScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
+    minHeight: (Platform.OS === 'web' ? '100vh' : '100%') as any,
     backgroundColor: '#050916',
     backgroundImage: 'linear-gradient(148deg, #46CFFF 0%, #3479ED 19%, #142C68 43%, #080F26 68%, #03050B 100%)',
   },
