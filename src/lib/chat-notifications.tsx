@@ -121,12 +121,16 @@ export function ChatNotificationProvider({ children }: { children: ReactNode }) 
         const lastMsgTime = conv.lastMessageAt || '';
         const prevMsgTime = knownMessagesRef.current.get(conv.id);
 
-        if (!initialLoadRef.current && lastMsgTime && lastMsgTime !== prevMsgTime && conv.unread) {
+        const isFromMe = Boolean(
+          conv.lastSenderId && user?.id && String(conv.lastSenderId) === String(user.id)
+        );
+
+        if (!initialLoadRef.current && lastMsgTime && lastMsgTime !== prevMsgTime && !isFromMe) {
           const senderName =
             conv.channel === 'whatsapp'
               ? conv.contactName || conv.contactAddress || 'WhatsApp Customer'
               : conv.lastSenderName ||
-                conv.participants.find((p) => (p.id ?? p._id) !== user?.id)?.displayName ||
+                conv.participants.find((p) => String(p.id ?? p._id) !== String(user?.id))?.displayName ||
                 'Agent';
 
           showPopup({
@@ -188,49 +192,51 @@ export function ChatNotificationProvider({ children }: { children: ReactNode }) 
       {/* Floating Popup Notification Banner */}
       {activeNotification && (
         <View style={[styles.popupContainer, { top: insets.top + 8 }]}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Open new message"
-            onPress={handleNotificationPress}
-            style={styles.popupCard}>
-            <View
-              style={[
-                styles.popupIconBadge,
-                activeNotification.channel === 'whatsapp' ? styles.whatsappBadge : styles.internalBadge,
-              ]}>
-              <Text style={styles.popupIconText}>
-                {activeNotification.channel === 'whatsapp' ? 'WA' : 'AG'}
-              </Text>
-            </View>
-
-            <View style={styles.popupContent}>
-              <View style={styles.popupHeaderRow}>
-                <Text numberOfLines={1} style={styles.popupSender}>
-                  {activeNotification.senderName}
+          <View style={styles.popupCard}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Open new message"
+              onPress={handleNotificationPress}
+              style={styles.popupMainContent}>
+              <View
+                style={[
+                  styles.popupIconBadge,
+                  activeNotification.channel === 'whatsapp' ? styles.whatsappBadge : styles.internalBadge,
+                ]}>
+                <Text style={styles.popupIconText}>
+                  {activeNotification.channel === 'whatsapp' ? 'WA' : 'AG'}
                 </Text>
-                <View
-                  style={[
-                    styles.tagPill,
-                    activeNotification.channel === 'whatsapp' ? styles.waTagPill : styles.internalTagPill,
-                  ]}>
-                  <Text style={styles.tagPillText}>
-                    {activeNotification.channel === 'whatsapp' ? 'WhatsApp' : 'Agent'}
+              </View>
+
+              <View style={styles.popupContent}>
+                <View style={styles.popupHeaderRow}>
+                  <Text numberOfLines={1} style={styles.popupSender}>
+                    {activeNotification.senderName}
                   </Text>
+                  <View
+                    style={[
+                      styles.tagPill,
+                      activeNotification.channel === 'whatsapp' ? styles.waTagPill : styles.internalTagPill,
+                    ]}>
+                    <Text style={styles.tagPillText}>
+                      {activeNotification.channel === 'whatsapp' ? 'WhatsApp' : 'Agent'}
+                    </Text>
+                  </View>
+                  <Text style={styles.popupTime}>{activeNotification.timestamp}</Text>
                 </View>
-                <Text style={styles.popupTime}>{activeNotification.timestamp}</Text>
-              </View>
 
-              <Text numberOfLines={2} style={styles.popupText}>
-                {activeNotification.preview}
-              </Text>
+                <Text numberOfLines={2} style={styles.popupText}>
+                  {activeNotification.preview}
+                </Text>
 
-              <View style={styles.popupActionRow}>
-                <View style={styles.oneMessageBadge}>
-                  <Text style={styles.oneMessageText}>1 new message</Text>
+                <View style={styles.popupActionRow}>
+                  <View style={styles.oneMessageBadge}>
+                    <Text style={styles.oneMessageText}>1 new message</Text>
+                  </View>
+                  <Text style={styles.tapToReplyText}>Tap to open chat →</Text>
                 </View>
-                <Text style={styles.tapToReplyText}>Tap to open chat →</Text>
               </View>
-            </View>
+            </Pressable>
 
             <Pressable
               accessibilityRole="button"
@@ -239,7 +245,7 @@ export function ChatNotificationProvider({ children }: { children: ReactNode }) 
               style={styles.closeBtn}>
               <Text style={styles.closeText}>✕</Text>
             </Pressable>
-          </Pressable>
+          </View>
         </View>
       )}
     </ChatNotificationContext.Provider>
@@ -261,6 +267,7 @@ const styles = StyleSheet.create({
     right: 12,
     alignItems: 'center',
     zIndex: 99999,
+    elevation: 9999,
   },
   popupCard: {
     width: '100%',
@@ -278,6 +285,12 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.16,
     shadowRadius: 12,
     elevation: 8,
+  },
+  popupMainContent: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
   },
   popupIconBadge: {
     width: 38,

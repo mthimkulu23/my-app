@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, Vibration, useWindowDimensions, View } from 'react-native';
+import { Animated, Easing, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, Vibration, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -138,6 +138,33 @@ export default function HomeScreen() {
   const activeCall = calls.find((call) => call.id === activeCallId && call.status !== 'ended') ?? null;
   const liveCalls = calls.filter((call) => call.status !== 'ended');
   const callControlsReady = Boolean(activeCall?.demo || (activeCall?.session && activeCall.status === 'connected'));
+  const scrollY = useRef(new Animated.Value(0)).current;
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.timing(fadeAnim, {
+      toValue: 1,
+      duration: 350,
+      useNativeDriver: true,
+      easing: Easing.out(Easing.quad),
+    }).start();
+  }, [fadeAnim]);
+
+  useEffect(() => {
+    if (activeCall && (activeCall.status === 'ringing' || activeCall.status === 'connected')) {
+      const pulse = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, { toValue: 1.25, duration: 600, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+          Animated.timing(pulseAnim, { toValue: 1, duration: 600, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+        ])
+      );
+      pulse.start();
+      return () => pulse.stop();
+    } else {
+      pulseAnim.setValue(1);
+    }
+  }, [activeCall?.status, pulseAnim]);
 
   useEffect(() => () => {
     for (const timer of demoRingTimers.current.values()) clearInterval(timer);
@@ -636,7 +663,11 @@ export default function HomeScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
-      <View style={styles.header}>
+      {/* ── Animated Header ── */}
+      <Animated.View style={[styles.header, {
+        transform: [{ translateY: scrollY.interpolate({ inputRange: [0, 60], outputRange: [0, -4], extrapolate: 'clamp' }) }],
+        shadowOpacity: scrollY.interpolate({ inputRange: [0, 40], outputRange: [0, 0.14], extrapolate: 'clamp' }),
+      }]}>
         <View style={styles.brandIcon}><Text style={styles.brandIconText}>A</Text></View>
         <Text style={styles.headerTitle}>{user?.role === 'agent' ? 'Agent panel' : 'Workspace'}</Text>
         <Text numberOfLines={1} style={styles.currentUser}>{user?.displayName}</Text>
@@ -644,9 +675,14 @@ export default function HomeScreen() {
         <Pressable accessibilityRole="button" onPress={() => { void signOut(); }} style={styles.signOutButton}>
           <Text style={styles.signOutText}>Sign out</Text>
         </Pressable>
-      </View>
+      </Animated.View>
 
-      <ScrollView contentContainerStyle={[styles.content, compact && styles.compactContent, compact && { paddingBottom: 82 + insets.bottom }]} keyboardShouldPersistTaps="handled">
+      <Animated.ScrollView
+        onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], { useNativeDriver: false })}
+        scrollEventThrottle={16}
+        contentContainerStyle={[styles.content, compact && styles.compactContent, compact && { paddingBottom: 82 + insets.bottom }]}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}>
         <View style={styles.queueHeader}>
           <View style={styles.queueHeadingRow}>
             <Text style={styles.queueHeading}>Voice Queues</Text>
@@ -692,7 +728,7 @@ export default function HomeScreen() {
             </Pressable>
           </View>
           <View style={[styles.phoneTools, compact && styles.compactPhoneTools]}>
-            <View style={[styles.onlineDot, demoMode ? styles.softphoneOnline : styles.softphoneOffline]} />
+            <Animated.View style={[styles.onlineDot, demoMode ? styles.softphoneOnline : styles.softphoneOffline, Boolean(activeCall) && { transform: [{ scale: pulseAnim }] }]} />
             <Text style={styles.phoneReadyText}>{activeCall ? `${activeCall.demo ? 'DEMO · ' : ''}${activeCall.status.toUpperCase()}` : demoMode ? 'DEMO MODE' : 'LIVE SOFTPHONE'}</Text>
             {activeCall && <Text style={styles.callTimerLabel}>{activeCall.destination}</Text>}
           </View>
@@ -857,14 +893,14 @@ export default function HomeScreen() {
             </Pressable>
           </View>
         </View>
-      </ScrollView>
+      </Animated.ScrollView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: '#F6F7F8' },
-  header: { height: 56, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 18, backgroundColor: '#FFFFFF', borderBottomWidth: 1, borderBottomColor: border, gap: 10 },
+  header: { height: 56, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 18, backgroundColor: '#FFFFFF', borderBottomWidth: 1, borderBottomColor: border, gap: 10, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowRadius: 4, elevation: 3 },
   brandIcon: { width: 30, height: 30, borderRadius: 6, backgroundColor: blue, alignItems: 'center', justifyContent: 'center' },
   brandIconText: { color: '#FFFFFF', fontSize: 16, fontWeight: '700' },
   headerTitle: { color: dark, flex: 1, fontSize: 15, fontWeight: '600' },

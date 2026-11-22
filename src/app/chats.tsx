@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { router } from 'expo-router';
 
 import { useOnlineAgents } from '@/hooks/use-online-agents';
 import {
@@ -227,10 +228,10 @@ export default function ChatsScreen() {
   }, [selectedConversationId]);
 
   useEffect(() => {
-    if (!activeId && conversations.length > 0) {
+    if (wide && !activeId && conversations.length > 0) {
       setActiveId(conversations[0]?.id || '');
     }
-  }, [conversations, activeId]);
+  }, [conversations, activeId, wide]);
 
   useEffect(() => {
     if (activeId && token) {
@@ -543,6 +544,15 @@ export default function ChatsScreen() {
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       <View style={styles.header}>
+        {!wide && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Back to Calls"
+            onPress={() => router.push('/')}
+            style={styles.headerBackButton}>
+            <Text style={styles.headerBackText}>← Calls</Text>
+          </Pressable>
+        )}
         <View style={styles.brandIcon}>
           <Text style={styles.brandIconText}>A</Text>
         </View>
@@ -637,8 +647,15 @@ export default function ChatsScreen() {
           <View style={styles.thread}>
             <View style={styles.threadHeader}>
               {!wide && (
-                <Pressable onPress={() => setActiveId('')} style={styles.backButton}>
-                  <Text style={styles.backText}>Back</Text>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Back to conversation list"
+                  onPress={() => {
+                    setActiveId('');
+                    setSelectedConversationId('');
+                  }}
+                  style={styles.backButton}>
+                  <Text style={styles.backText}>← Back</Text>
                 </Pressable>
               )}
               <View style={styles.threadHeading}>
@@ -1026,6 +1043,16 @@ const styles = StyleSheet.create({
   },
   brandIconText: { color: '#FFFFFF', fontSize: 16, fontWeight: '700' },
   headerTitle: { color: dark, flex: 1, fontSize: 15, fontWeight: '600' },
+  headerBackButton: {
+    minHeight: 36,
+    justifyContent: 'center',
+    paddingRight: 6,
+  },
+  headerBackText: {
+    color: blue,
+    fontSize: 13,
+    fontWeight: '600',
+  },
   userName: { maxWidth: 125, color: muted, fontSize: 12 },
   signOutButton: { minHeight: 36, justifyContent: 'center', paddingHorizontal: 8 },
   signOutText: { color: blue, fontSize: 12, fontWeight: '600' },

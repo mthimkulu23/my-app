@@ -39,8 +39,7 @@
           "imageWidth": 76
         }
       ],
-      "expo-secure-store",
-      "@twilio/voice-react-native-sdk"
+      "expo-secure-store"
     ],
     "experiments": {
       "typedRoutes": true,

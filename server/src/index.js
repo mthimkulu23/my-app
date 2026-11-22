@@ -39,7 +39,7 @@ app.use(helmet({
 app.use(cors({
   origin(origin, callback) {
     const isLocalDevelopmentOrigin = process.env.NODE_ENV !== 'production'
-      && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin || '');
+      && /^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?$/.test(origin || '');
     if (!origin || allowedOrigins.includes(origin) || isLocalDevelopmentOrigin) return callback(null, true);
     return callback(new Error('Origin is not allowed'));
   },
