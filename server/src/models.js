@@ -59,3 +59,15 @@ export const User = mongoose.model('User', userSchema);
 export const Conversation = mongoose.model('Conversation', conversationSchema);
 export const Message = mongoose.model('Message', messageSchema);
 export const CallLog = mongoose.model('CallLog', callLogSchema);
+
+const agentShiftSchema = new mongoose.Schema({
+  agentId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  agentName: { type: String, required: true },
+  email: { type: String, required: true },
+  loginAt: { type: Date, required: true, default: Date.now },
+  logoutAt: { type: Date, default: null },
+  durationMinutes: { type: Number, default: 0 },
+  status: { type: String, enum: ['active', 'completed'], default: 'active' },
+}, { timestamps: true });
+
+export const AgentShift = mongoose.model('AgentShift', agentShiftSchema);

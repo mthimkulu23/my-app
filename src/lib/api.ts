@@ -12,6 +12,17 @@ export type AgentDirectoryEntry = {
   lastSeenAt: string | null;
 };
 
+export type AgentShiftEntry = {
+  id: string;
+  agentId: string;
+  agentName: string;
+  email: string;
+  loginAt: string;
+  logoutAt: string | null;
+  durationMinutes: number;
+  status: 'active' | 'completed';
+};
+
 export type ConversationParticipant = {
   id?: string;
   _id?: string;

@@ -9,7 +9,7 @@ import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
 import twilio from 'twilio';
 import { z } from 'zod';
-import { CallLog, Conversation, Message, User } from './models.js';
+import { AgentShift, CallLog, Conversation, Message, User } from './models.js';
 
 const app = express();
 const port = Number(process.env.PORT || 4000);
@@ -248,6 +248,16 @@ app.post('/auth/register', authLimiter, asyncRoute(async (req, res) => {
     role: agentEmails.has(email) ? 'agent' : 'customer',
     presence: { online: true, lastSeenAt: new Date() },
   });
+  if (user.role === 'agent') {
+    await AgentShift.create({
+      agentId: user._id,
+      agentName: user.displayName,
+      email: user.email,
+      loginAt: new Date(),
+      status: 'active',
+    });
+    console.log(`[MANAGER NOTIFICATION] Agent registered & logged in: ${user.displayName} (${user.email}) at ${new Date().toLocaleTimeString()}`);
+  }
   return res.status(201).json({ token: issueSession(user), user: { id: user.id, displayName: user.displayName, email: user.email, role: user.role } });
 }));
 
@@ -260,6 +270,26 @@ app.post('/auth/login', authLimiter, asyncRoute(async (req, res) => {
   if (agentEmails.has(user.email)) user.role = 'agent';
   user.presence = { online: true, lastSeenAt: new Date() };
   await user.save();
+
+  if (user.role === 'agent') {
+    const previousShift = await AgentShift.findOne({ agentId: user._id, status: 'active' }).sort({ loginAt: -1 });
+    if (previousShift) {
+      const logoutAt = new Date();
+      previousShift.logoutAt = logoutAt;
+      previousShift.durationMinutes = Math.max(1, Math.round((logoutAt - previousShift.loginAt) / 60000));
+      previousShift.status = 'completed';
+      await previousShift.save();
+    }
+    await AgentShift.create({
+      agentId: user._id,
+      agentName: user.displayName,
+      email: user.email,
+      loginAt: new Date(),
+      status: 'active',
+    });
+    console.log(`[MANAGER NOTIFICATION] Agent logged in: ${user.displayName} (${user.email}) at ${new Date().toLocaleTimeString()}`);
+  }
+
   return res.json({ token: issueSession(user), user: { id: user.id, displayName: user.displayName, email: user.email, role: user.role } });
 }));
 
@@ -294,8 +324,52 @@ app.put('/api/presence', requireAuth, asyncRoute(async (req, res) => {
 }));
 
 app.post('/api/presence/offline', requireAuth, asyncRoute(async (req, res) => {
-  await User.findByIdAndUpdate(req.userId, { $set: { 'presence.online': false } });
+  const user = await User.findByIdAndUpdate(req.userId, { $set: { 'presence.online': false } });
+  if (user && user.role === 'agent') {
+    const shift = await AgentShift.findOne({ agentId: req.userId, status: 'active' }).sort({ loginAt: -1 });
+    if (shift) {
+      const logoutAt = new Date();
+      shift.logoutAt = logoutAt;
+      shift.durationMinutes = Math.max(1, Math.round((logoutAt - shift.loginAt) / 60000));
+      shift.status = 'completed';
+      await shift.save();
+      console.log(`[MANAGER NOTIFICATION] Agent logged out: ${shift.agentName} (${shift.email}) at ${logoutAt.toLocaleTimeString()}. Shift duration: ${shift.durationMinutes} min`);
+    }
+  }
   return res.sendStatus(204);
+}));
+
+app.get('/api/agent-shifts', requireAuth, asyncRoute(async (req, res) => {
+  const user = await User.findById(req.userId).select('role');
+  if (!user || user.role !== 'agent') {
+    return res.status(403).json({ error: 'Only agents and managers can view shift logs' });
+  }
+
+  // Auto-close active shifts whose last heartbeat was > 90 seconds ago
+  const onlineSince = new Date(Date.now() - 90_000);
+  const activeShifts = await AgentShift.find({ status: 'active' }).populate('agentId', 'presence');
+  for (const shift of activeShifts) {
+    const presence = shift.agentId?.presence;
+    if (presence && (!presence.online || (presence.lastSeenAt && presence.lastSeenAt < onlineSince))) {
+      const logoutAt = presence.lastSeenAt || new Date();
+      shift.logoutAt = logoutAt;
+      shift.durationMinutes = Math.max(1, Math.round((logoutAt - shift.loginAt) / 60000));
+      shift.status = 'completed';
+      await shift.save();
+    }
+  }
+
+  const shifts = await AgentShift.find().sort({ loginAt: -1 }).limit(100).lean();
+  return res.json(shifts.map((s) => ({
+    id: String(s._id),
+    agentId: String(s.agentId?._id || s.agentId),
+    agentName: s.agentName,
+    email: s.email,
+    loginAt: s.loginAt,
+    logoutAt: s.logoutAt,
+    durationMinutes: s.durationMinutes,
+    status: s.status,
+  })));
 }));
 
 app.get('/api/conversations', requireAuth, asyncRoute(async (req, res) => {

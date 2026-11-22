@@ -4,7 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useOnlineAgents } from '@/hooks/use-online-agents';
-import { apiRequest, type CallLogEntry } from '@/lib/api';
+import { apiRequest, type AgentShiftEntry, type CallLogEntry } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { connectVoice } from '@/lib/voice';
 import type { AudioRouteType, VoiceAudioDevice, VoiceSession, VoiceStatus } from '@/lib/voice.types';
@@ -120,6 +120,8 @@ export default function HomeScreen() {
   const [showCallHistory, setShowCallHistory] = useState(false);
   const [callHistoryLoading, setCallHistoryLoading] = useState(false);
   const [callHistoryError, setCallHistoryError] = useState('');
+  const [shifts, setShifts] = useState<AgentShiftEntry[]>([]);
+  const [shiftsLoading, setShiftsLoading] = useState(false);
   const [activeCallId, setActiveCallId] = useState<string | null>(null);
   const [addingCall, setAddingCall] = useState(false);
   const [dialing, setDialing] = useState(false);
@@ -162,6 +164,24 @@ export default function HomeScreen() {
     };
   }, [token]);
 
+  useEffect(() => {
+    if (workspaceTab !== 'Agents' || !token || user?.role !== 'agent') return;
+    let active = true;
+    setShiftsLoading(true);
+    const fetchShifts = () => {
+      apiRequest<AgentShiftEntry[]>('/api/agent-shifts', {}, token)
+        .then((data) => { if (active) setShifts(data); })
+        .catch(() => {})
+        .finally(() => { if (active) setShiftsLoading(false); });
+    };
+    fetchShifts();
+    const interval = setInterval(fetchShifts, 20_000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [workspaceTab, token, user?.role]);
+
   function updateCall(callId: string, patch: Partial<PhoneCall>) {
     setCalls((current) => current.map((call) => call.id === callId ? { ...call, ...patch } : call));
   }
@@ -198,12 +218,36 @@ export default function HomeScreen() {
     }
     if (workspaceTab === 'Agents') {
       return (
-        <View style={styles.infoContent}>
+        <ScrollView style={styles.infoContent} contentContainerStyle={{ paddingBottom: 24 }}>
           <Text style={styles.infoTitle}>Agents online ({agents.length})</Text>
           {agentsLoading && agents.length === 0 ? <Text style={styles.infoMeta}>Checking availability…</Text> : null}
           {!agentsLoading && agents.length === 0 ? <Text style={styles.infoMeta}>No agents are online</Text> : null}
-          {agents.map((agent) => <Text key={agent.id} style={styles.infoLine}>{agent.displayName}</Text>)}
-        </View>
+          {agents.map((agent) => (
+            <View key={agent.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 7, marginVertical: 4 }}>
+              <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#2D9D65' }} />
+              <Text style={styles.infoLine}>{agent.displayName}</Text>
+            </View>
+          ))}
+
+          <Text style={[styles.infoTitle, { marginTop: 18, borderTopWidth: 1, borderTopColor: '#DDE3E7', paddingTop: 12 }]}>
+            Attendance & Shifts
+          </Text>
+          {shiftsLoading && shifts.length === 0 ? <Text style={styles.infoMeta}>Loading shift logs…</Text> : null}
+          {!shiftsLoading && shifts.length === 0 ? <Text style={styles.infoMeta}>No shift records yet.</Text> : null}
+          {shifts.slice(0, 15).map((shift) => (
+            <View key={shift.id} style={{ marginVertical: 5, padding: 9, backgroundColor: 'rgba(22,143,208,0.06)', borderRadius: 8, borderWidth: 1, borderColor: '#DDE3E7' }}>
+              <Text style={{ fontWeight: '700', fontSize: 13, color: '#34424B' }}>{shift.agentName}</Text>
+              <Text style={{ fontSize: 11, color: '#7E8A92', marginTop: 2 }}>
+                Login: {new Date(shift.loginAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' })}
+              </Text>
+              <Text style={{ fontSize: 11, fontWeight: '600', color: shift.status === 'active' ? '#2D9D65' : '#7E8A92', marginTop: 1 }}>
+                {shift.status === 'active'
+                  ? '● Active now'
+                  : `Logout: ${shift.logoutAt ? new Date(shift.logoutAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Offline'} (${shift.durationMinutes} min)`}
+              </Text>
+            </View>
+          ))}
+        </ScrollView>
       );
     }
     return (
@@ -686,6 +730,7 @@ const styles = StyleSheet.create({
   callHistoryDuration: { color: dark, fontSize: 11, fontWeight: '600' },
   callHistoryError: { color: '#B42318', fontSize: 11, paddingVertical: 8 },
   phonePanel: { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: border, borderRadius: 8, overflow: 'hidden' },
+  compactPhonePanel: { width: '100%' },
   phoneTabs: { height: 38, flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: border },
   compactPhoneTabs: { height: 32 },
   phoneTab: { flex: 1, alignItems: 'center', justifyContent: 'center' },
