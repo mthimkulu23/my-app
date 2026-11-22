@@ -14,6 +14,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
+import { AudioModule, RecordingPresets, requestRecordingPermissionsAsync } from 'expo-audio';
 
 import { useOnlineAgents } from '@/hooks/use-online-agents';
 import {
@@ -213,6 +214,7 @@ export default function ChatsScreen() {
   const [recordingVoice, setRecordingVoice] = useState(false);
   const [recordingDuration, setRecordingDuration] = useState(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const nativeRecorderRef = useRef<any>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const recordTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -296,6 +298,28 @@ export default function ChatsScreen() {
 
   async function startVoiceRecording() {
     try {
+      if (Platform.OS !== 'web') {
+        const permission = await requestRecordingPermissionsAsync();
+        if (!permission.granted) {
+          setError('Microphone permission was denied. Please allow microphone access in your phone settings.');
+          return;
+        }
+        const recorder = new AudioModule.AudioRecorder(RecordingPresets.HIGH_QUALITY);
+        nativeRecorderRef.current = recorder;
+        recorder.record();
+        setRecordingVoice(true);
+        setRecordingDuration(0);
+        setShowEmojiPicker(false);
+        setEditingMessageId(null);
+        setError('');
+
+        if (recordTimerRef.current) clearInterval(recordTimerRef.current);
+        recordTimerRef.current = setInterval(() => {
+          setRecordingDuration((prev) => prev + 1);
+        }, 1000);
+        return;
+      }
+
       if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
         setError('Voice recording is not supported in this browser.');
         return;
@@ -320,18 +344,34 @@ export default function ChatsScreen() {
       recordTimerRef.current = setInterval(() => {
         setRecordingDuration((prev) => prev + 1);
       }, 1000);
-    } catch {
-      setError('Microphone permission denied or audio device not found.');
+    } catch (err: unknown) {
+      const errorObj = err as { name?: string; message?: string };
+      if (Platform.OS === 'web' && typeof window !== 'undefined' && window.isSecureContext === false) {
+        setError('Microphone requires HTTPS or localhost. Browsers block microphone access over plain HTTP IP addresses.');
+      } else if (errorObj?.name === 'NotAllowedError' || errorObj?.name === 'PermissionDeniedError') {
+        setError('Microphone permission was denied. Click the lock/tune icon in your browser address bar to allow microphone access.');
+      } else if (errorObj?.name === 'NotFoundError' || errorObj?.name === 'DevicesNotFoundError') {
+        setError('No microphone found. Please plug in a microphone or headset.');
+      } else {
+        setError(errorObj?.message || 'Microphone permission denied or audio device not found.');
+      }
     }
   }
 
   function cancelVoiceRecording() {
     if (recordTimerRef.current) clearInterval(recordTimerRef.current);
+    if (nativeRecorderRef.current) {
+      try {
+        void nativeRecorderRef.current.stop();
+      } catch {}
+      nativeRecorderRef.current = null;
+    }
     if (mediaRecorderRef.current) {
       try {
         mediaRecorderRef.current.stream?.getTracks().forEach((track) => track.stop());
         mediaRecorderRef.current.stop();
       } catch {}
+      mediaRecorderRef.current = null;
     }
     setRecordingVoice(false);
     setRecordingDuration(0);
@@ -339,10 +379,76 @@ export default function ChatsScreen() {
   }
 
   async function stopAndSendVoiceRecording() {
-    if (!mediaRecorderRef.current || !token || !activeId) return;
+    if ((!mediaRecorderRef.current && !nativeRecorderRef.current) || !token || !activeId) return;
     if (recordTimerRef.current) clearInterval(recordTimerRef.current);
 
+    if (Platform.OS !== 'web' && nativeRecorderRef.current) {
+      const recorder = nativeRecorderRef.current;
+      nativeRecorderRef.current = null;
+      try {
+        await recorder.stop();
+        const uri = recorder.uri;
+        if (!uri) {
+          setRecordingVoice(false);
+          return;
+        }
+        setSending(true);
+        setUploadingAttachment(true);
+        const fileResponse = await fetch(uri);
+        const blob = await fileResponse.blob();
+        const reader = new FileReader();
+        reader.onload = async () => {
+          try {
+            const base64 = String(reader.result || '');
+            const uploaded = await uploadAttachment(
+              {
+                fileName: `voice_${Date.now()}.m4a`,
+                fileType: 'audio/m4a',
+                data: base64,
+              },
+              token
+            );
+            const saved = await apiRequest<ChatMessage>(
+              `/api/conversations/${activeId}/messages`,
+              {
+                method: 'POST',
+                body: JSON.stringify({
+                  text: '',
+                  attachment: uploaded,
+                }),
+              },
+              token
+            );
+            setMessages((current) => [...current, saved]);
+            void refreshConversations();
+          } catch (sendErr) {
+            setError(sendErr instanceof Error ? sendErr.message : 'Could not send voice note.');
+          } finally {
+            setSending(false);
+            setUploadingAttachment(false);
+            setRecordingVoice(false);
+            setRecordingDuration(0);
+          }
+        };
+        reader.onerror = () => {
+          setSending(false);
+          setUploadingAttachment(false);
+          setRecordingVoice(false);
+        };
+        reader.readAsDataURL(blob);
+      } catch (recErr) {
+        setError(recErr instanceof Error ? recErr.message : 'Failed to save recording.');
+        setSending(false);
+        setUploadingAttachment(false);
+        setRecordingVoice(false);
+        setRecordingDuration(0);
+      }
+      return;
+    }
+
     const recorder = mediaRecorderRef.current;
+    if (!recorder) return;
+    mediaRecorderRef.current = null;
     recorder.onstop = () => {
       try {
         recorder.stream?.getTracks().forEach((track) => track.stop());
