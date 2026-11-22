@@ -57,6 +57,9 @@ export type ChatMessage = {
   direction: 'internal' | 'inbound' | 'outbound';
   text: string;
   attachment?: MessageAttachment | null;
+  isDeleted?: boolean;
+  isEdited?: boolean;
+  editedAt?: string | null;
   createdAt: string;
 };
 
@@ -71,6 +74,27 @@ export type CallLogEntry = {
   answeredAt: string | null;
   endedAt: string | null;
   durationSeconds: number;
+};
+
+export type AnalyticsDayBucket = { label: string; count: number };
+export type AnalyticsTopNumber = { number: string; count: number };
+export type AnalyticsReport = {
+  calls: {
+    today: number;
+    thisWeek: number;
+    last30Days: number;
+    avgDurationSeconds: number;
+    busiestHour: string | null;
+    byDay: AnalyticsDayBucket[];
+    topNumbers: AnalyticsTopNumber[];
+  };
+  inquiries: {
+    whatsappToday: number;
+    whatsappThisWeek: number;
+    whatsappLast30: number;
+    internalChatsLast30: number;
+    openInquiries: number;
+  };
 };
 
 const apiUrl = process.env.EXPO_PUBLIC_API_URL?.trim().replace(/\/+$/, '');
@@ -115,5 +139,24 @@ export async function uploadAttachment(file: { fileName: string; fileType: strin
 export async function markConversationRead(conversationId: string, token: string): Promise<void> {
   await apiRequest<void>(`/api/conversations/${conversationId}/read`, {
     method: 'POST',
+  }, token);
+}
+
+export async function editChatMessage(conversationId: string, messageId: string, text: string, token: string): Promise<ChatMessage> {
+  return apiRequest<ChatMessage>(`/api/conversations/${conversationId}/messages/${messageId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ text }),
+  }, token);
+}
+
+export async function deleteChatMessage(conversationId: string, messageId: string, token: string): Promise<{ id: string; isDeleted: boolean }> {
+  return apiRequest<{ id: string; isDeleted: boolean }>(`/api/conversations/${conversationId}/messages/${messageId}`, {
+    method: 'DELETE',
+  }, token);
+}
+
+export async function deleteConversationThread(conversationId: string, token: string): Promise<{ success: boolean; id: string }> {
+  return apiRequest<{ success: boolean; id: string }>(`/api/conversations/${conversationId}`, {
+    method: 'DELETE',
   }, token);
 }

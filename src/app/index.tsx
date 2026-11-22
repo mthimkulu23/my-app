@@ -4,7 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useOnlineAgents } from '@/hooks/use-online-agents';
-import { apiRequest, type AgentShiftEntry, type CallLogEntry } from '@/lib/api';
+import { apiRequest, type AgentShiftEntry, type AnalyticsReport, type CallLogEntry } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { connectVoice } from '@/lib/voice';
 import type { AudioRouteType, VoiceAudioDevice, VoiceSession, VoiceStatus } from '@/lib/voice.types';
@@ -126,8 +126,14 @@ export default function HomeScreen() {
   const [addingCall, setAddingCall] = useState(false);
   const [dialing, setDialing] = useState(false);
   const [callError, setCallError] = useState('');
+  const [showTransferModal, setShowTransferModal] = useState(false);
+  const [transferNumber, setTransferNumber] = useState('');
+  const [transferring, setTransferring] = useState(false);
   const [doNotDisturb, setDoNotDisturb] = useState(false);
   const [demoMode, setDemoMode] = useState(true);
+  const [analytics, setAnalytics] = useState<AnalyticsReport | null>(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [analyticsError, setAnalyticsError] = useState('');
   const demoRingTimers = useRef(new Map<string, ReturnType<typeof setInterval>>());
   const activeCall = calls.find((call) => call.id === activeCallId && call.status !== 'ended') ?? null;
   const liveCalls = calls.filter((call) => call.status !== 'ended');
@@ -182,6 +188,21 @@ export default function HomeScreen() {
     };
   }, [workspaceTab, token, user?.role]);
 
+  useEffect(() => {
+    if (workspaceTab !== 'CRM' || !token) return;
+    let active = true;
+    const fetchAnalytics = () => {
+      setAnalyticsLoading(true);
+      apiRequest<AnalyticsReport>('/api/analytics', {}, token)
+        .then((data) => { if (active) { setAnalytics(data); setAnalyticsError(''); } })
+        .catch((err) => { if (active) setAnalyticsError(err instanceof Error ? err.message : 'Failed to load analytics.'); })
+        .finally(() => { if (active) setAnalyticsLoading(false); });
+    };
+    fetchAnalytics();
+    const interval = setInterval(fetchAnalytics, 60_000);
+    return () => { active = false; clearInterval(interval); };
+  }, [workspaceTab, token]);
+
   function updateCall(callId: string, patch: Partial<PhoneCall>) {
     setCalls((current) => current.map((call) => call.id === callId ? { ...call, ...patch } : call));
   }
@@ -217,17 +238,33 @@ export default function HomeScreen() {
       );
     }
     if (workspaceTab === 'Agents') {
+      const onlineAgents = agents.filter((a) => a.online);
+      const offlineAgents = agents.filter((a) => !a.online);
       return (
         <ScrollView style={styles.agentsScroll} contentContainerStyle={styles.agentsScrollContent}>
-          <Text style={styles.infoTitle}>Agents online ({agents.length})</Text>
+          <Text style={styles.infoTitle}>Agents online ({onlineAgents.length})</Text>
           {agentsLoading && agents.length === 0 ? <Text style={styles.infoMeta}>Checking availability…</Text> : null}
-          {!agentsLoading && agents.length === 0 ? <Text style={styles.infoMeta}>No agents are online</Text> : null}
-          {agents.map((agent) => (
+          {!agentsLoading && onlineAgents.length === 0 ? <Text style={styles.infoMeta}>No agents are online</Text> : null}
+          {onlineAgents.map((agent) => (
             <View key={agent.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 7, marginVertical: 4 }}>
               <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#2D9D65' }} />
               <Text style={styles.infoLine}>{agent.displayName}</Text>
             </View>
           ))}
+
+          {offlineAgents.length > 0 && (
+            <>
+              <Text style={[styles.infoTitle, { marginTop: 14, fontSize: 12, color: '#7E8A92' }]}>
+                Offline ({offlineAgents.length})
+              </Text>
+              {offlineAgents.map((agent) => (
+                <View key={agent.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 7, marginVertical: 3 }}>
+                  <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#A8B0B5' }} />
+                  <Text style={[styles.infoLine, { color: '#7E8A92' }]}>{agent.displayName}</Text>
+                </View>
+              ))}
+            </>
+          )}
 
           <Text style={[styles.infoTitle, { marginTop: 18, borderTopWidth: 1, borderTopColor: '#DDE3E7', paddingTop: 12 }]}>
             Attendance & Shifts
@@ -251,9 +288,104 @@ export default function HomeScreen() {
       );
     }
     return (
-      <View style={styles.emptyCrm}>
-        <Text style={styles.emptyCrmText}>No CRM page available</Text>
-      </View>
+      <ScrollView style={styles.crmScroll} contentContainerStyle={styles.crmContent}>
+        {/* Header */}
+        <View style={styles.crmHeaderRow}>
+          <Text style={styles.crmTitle}>📊 Analytics Dashboard</Text>
+          {analyticsLoading && <Text style={styles.crmRefreshing}>Refreshing…</Text>}
+        </View>
+        {!!analyticsError && <Text style={styles.crmError}>{analyticsError}</Text>}
+
+        {/* ── Calls Section ── */}
+        <Text style={styles.crmSectionLabel}>📞 Calls</Text>
+        <View style={styles.crmStatRow}>
+          <View style={styles.crmStatCard}>
+            <Text style={styles.crmStatValue}>{analytics?.calls.today ?? '—'}</Text>
+            <Text style={styles.crmStatLabel}>Today</Text>
+          </View>
+          <View style={styles.crmStatCard}>
+            <Text style={styles.crmStatValue}>{analytics?.calls.thisWeek ?? '—'}</Text>
+            <Text style={styles.crmStatLabel}>This Week</Text>
+          </View>
+          <View style={styles.crmStatCard}>
+            <Text style={styles.crmStatValue}>{analytics?.calls.last30Days ?? '—'}</Text>
+            <Text style={styles.crmStatLabel}>Last 30 Days</Text>
+          </View>
+        </View>
+        <View style={styles.crmStatRow}>
+          <View style={[styles.crmStatCard, { flex: 1 }]}>
+            <Text style={styles.crmStatValue}>
+              {analytics ? `${Math.floor(analytics.calls.avgDurationSeconds / 60)}m ${analytics.calls.avgDurationSeconds % 60}s` : '—'}
+            </Text>
+            <Text style={styles.crmStatLabel}>Avg Call Duration</Text>
+          </View>
+          <View style={[styles.crmStatCard, { flex: 1 }]}>
+            <Text style={styles.crmStatValue}>{analytics?.calls.busiestHour ?? '—'}</Text>
+            <Text style={styles.crmStatLabel}>Busiest Hour (Today)</Text>
+          </View>
+        </View>
+
+        {/* ── Calls by Day bar chart ── */}
+        <Text style={styles.crmSectionLabel}>📅 Calls — Last 7 Days</Text>
+        <View style={styles.crmBarChart}>
+          {(analytics?.calls.byDay ?? Array.from({ length: 7 }, (_, i) => ({ label: ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][i], count: 0 }))).map((day) => {
+            const maxCount = Math.max(...(analytics?.calls.byDay.map((d) => d.count) ?? [1]), 1);
+            const pct = maxCount > 0 ? (day.count / maxCount) : 0;
+            return (
+              <View key={day.label} style={styles.crmBarCol}>
+                <Text style={styles.crmBarCount}>{day.count || ''}</Text>
+                <View style={styles.crmBarTrack}>
+                  <View style={[styles.crmBarFill, { height: `${Math.max(pct * 100, day.count > 0 ? 6 : 0)}%` as `${number}%` }]} />
+                </View>
+                <Text style={styles.crmBarLabel}>{day.label}</Text>
+              </View>
+            );
+          })}
+        </View>
+
+        {/* ── WhatsApp Inquiries ── */}
+        <Text style={styles.crmSectionLabel}>💬 WhatsApp Inquiries</Text>
+        <View style={styles.crmStatRow}>
+          <View style={styles.crmStatCard}>
+            <Text style={[styles.crmStatValue, { color: '#2D9D65' }]}>{analytics?.inquiries.whatsappToday ?? '—'}</Text>
+            <Text style={styles.crmStatLabel}>Today</Text>
+          </View>
+          <View style={styles.crmStatCard}>
+            <Text style={[styles.crmStatValue, { color: '#2D9D65' }]}>{analytics?.inquiries.whatsappThisWeek ?? '—'}</Text>
+            <Text style={styles.crmStatLabel}>This Week</Text>
+          </View>
+          <View style={styles.crmStatCard}>
+            <Text style={[styles.crmStatValue, { color: '#2D9D65' }]}>{analytics?.inquiries.whatsappLast30 ?? '—'}</Text>
+            <Text style={styles.crmStatLabel}>Last 30 Days</Text>
+          </View>
+        </View>
+        <View style={styles.crmStatRow}>
+          <View style={[styles.crmStatCard, { flex: 1 }]}>
+            <Text style={[styles.crmStatValue, { color: '#E9821B' }]}>{analytics?.inquiries.openInquiries ?? '—'}</Text>
+            <Text style={styles.crmStatLabel}>Open Inquiries</Text>
+          </View>
+          <View style={[styles.crmStatCard, { flex: 1 }]}>
+            <Text style={styles.crmStatValue}>{analytics?.inquiries.internalChatsLast30 ?? '—'}</Text>
+            <Text style={styles.crmStatLabel}>Internal Chats (30d)</Text>
+          </View>
+        </View>
+
+        {/* ── Top Dialled Numbers ── */}
+        {(analytics?.calls.topNumbers.length ?? 0) > 0 && (
+          <>
+            <Text style={styles.crmSectionLabel}>🔝 Top Dialled Numbers</Text>
+            {analytics!.calls.topNumbers.map((entry, i) => (
+              <View key={entry.number} style={styles.crmTopNumRow}>
+                <Text style={styles.crmTopNumRank}>#{i + 1}</Text>
+                <Text style={styles.crmTopNumVal}>{entry.number}</Text>
+                <View style={styles.crmTopNumBadge}><Text style={styles.crmTopNumBadgeText}>{entry.count} call{entry.count !== 1 ? 's' : ''}</Text></View>
+              </View>
+            ))}
+          </>
+        )}
+
+        <Text style={styles.crmFootnote}>Data refreshes every 60 seconds · Calls tracked for your account only</Text>
+      </ScrollView>
     );
   }
 
@@ -422,24 +554,36 @@ export default function HomeScreen() {
     }
   }
 
-  async function chooseBluetooth(call: PhoneCall) {
-    if (call.demo) {
-      updateCall(call.id, { route: 'bluetooth' });
-      return;
-    }
-    if (!call.session) return;
+  async function executeTransfer(call: PhoneCall, destination: string) {
+    if (!destination.trim()) return;
+    setTransferring(true);
     try {
-      const audioDevices = await call.session.getAudioDevices();
-      updateCall(call.id, { audioDevices });
-      if (audioDevices.some((device) => device.type === 'bluetooth')) {
-        await selectAudioRoute(call, 'bluetooth');
-      } else if (Platform.OS === 'ios') {
-        await call.session.showAudioRoutePicker();
+      if (call.demo) {
+        // Demo mode: log the transfer and end the current leg
+        if (call.logId) {
+          await updateDemoCallLog(call.logId, 'completed', call.startedAt ? Math.round((Date.now() - call.startedAt) / 1000) : 0);
+        }
+        updateCall(call.id, { status: 'ended' });
+        setShowTransferModal(false);
+        setTransferNumber('');
+        setCallError(`Demo: Call transferred to ${destination}`);
+      } else if (call.session && token) {
+        // Live mode: ask backend to redirect via Twilio REST API
+        await apiRequest('/api/calls/transfer', {
+          method: 'POST',
+          body: JSON.stringify({ callSid: (call.session as unknown as { parameters?: { CallSid?: string } }).parameters?.CallSid, destination }),
+        }, token);
+        // End the local leg — Twilio will reconnect the caller to the new destination
+        await endCall(call);
+        setShowTransferModal(false);
+        setTransferNumber('');
       } else {
-        setCallError('Connect a Bluetooth audio device, then try again.');
+        setCallError('Cannot transfer: call not ready.');
       }
     } catch (error) {
-      setCallError(error instanceof Error ? error.message : 'Could not open Bluetooth audio routes.');
+      setCallError(error instanceof Error ? error.message : 'Transfer failed.');
+    } finally {
+      setTransferring(false);
     }
   }
 
@@ -506,7 +650,7 @@ export default function HomeScreen() {
         <View style={styles.queueHeader}>
           <View style={styles.queueHeadingRow}>
             <Text style={styles.queueHeading}>Voice Queues</Text>
-            <Text style={styles.loggedIn}>(Agents online: {agents.length})</Text>
+            <Text style={styles.loggedIn}>(Agents online: {agents.filter((a) => a.online).length})</Text>
           </View>
           <Pressable
             accessibilityRole="button"
@@ -577,8 +721,8 @@ export default function HomeScreen() {
                 <Pressable accessibilityRole="button" accessibilityLabel="Toggle speaker" disabled={!callControlsReady} onPress={() => { void selectAudioRoute(activeCall, activeCall.route === 'speaker' ? 'earpiece' : 'speaker'); }} style={[styles.callControl, activeCall.route === 'speaker' && styles.callControlActive, !callControlsReady && styles.disabledCallControl]}>
                   <Text style={styles.callControlGlyph}>◖))</Text><Text style={styles.callControlText}>Speaker</Text>
                 </Pressable>
-                <Pressable accessibilityRole="button" accessibilityLabel="Bluetooth audio" disabled={!callControlsReady} onPress={() => { void chooseBluetooth(activeCall); }} style={[styles.callControl, activeCall.route === 'bluetooth' && styles.callControlActive, !callControlsReady && styles.disabledCallControl]}>
-                  <Text style={styles.callControlGlyph}>ᛒ</Text><Text style={styles.callControlText}>Bluetooth</Text>
+                <Pressable accessibilityRole="button" accessibilityLabel="Transfer call" disabled={!callControlsReady} onPress={() => { setTransferNumber(''); setShowTransferModal(true); setCallError(''); }} style={[styles.callControl, showTransferModal && styles.callControlActive, !callControlsReady && styles.disabledCallControl]}>
+                  <Text style={styles.callControlGlyph}>⇄</Text><Text style={styles.callControlText}>Transfer</Text>
                 </Pressable>
                 <Pressable accessibilityRole="button" accessibilityLabel="Add call" disabled={!callControlsReady} onPress={() => { setNumber(''); setAddingCall(true); setCallError(''); }} style={[styles.callControl, !callControlsReady && styles.disabledCallControl]}>
                   <Text style={styles.callControlGlyph}>＋</Text><Text style={styles.callControlText}>Add call</Text>
@@ -587,6 +731,44 @@ export default function HomeScreen() {
                   <Text style={styles.callControlGlyph}>☎</Text><Text style={styles.callControlText}>End</Text>
                 </Pressable>
               </View>
+
+              {/* ── Transfer Call Modal ── */}
+              {showTransferModal && (
+                <View style={styles.transferModal}>
+                  <Text style={styles.transferModalTitle}>Transfer Call</Text>
+                  <Text style={styles.transferModalHint}>Enter the number to transfer this call to:</Text>
+                  <View style={styles.transferInputRow}>
+                    <TextInput
+                      accessibilityLabel="Transfer destination number"
+                      value={transferNumber}
+                      onChangeText={setTransferNumber}
+                      placeholder="+27 or 08X XXX XXXX"
+                      placeholderTextColor="#B7BEC3"
+                      keyboardType="phone-pad"
+                      style={styles.transferInput}
+                      autoFocus
+                    />
+                  </View>
+                  <View style={styles.transferActions}>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Cancel transfer"
+                      onPress={() => { setShowTransferModal(false); setTransferNumber(''); }}
+                      style={styles.transferCancelBtn}>
+                      <Text style={styles.transferCancelText}>Cancel</Text>
+                    </Pressable>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Confirm transfer"
+                      disabled={!transferNumber.trim() || transferring}
+                      onPress={() => { void executeTransfer(activeCall, transferNumber); }}
+                      style={[styles.transferConfirmBtn, (!transferNumber.trim() || transferring) && styles.disabledCallControl]}>
+                      <Text style={styles.transferConfirmText}>{transferring ? 'Transferring…' : '⇄ Transfer'}</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              )}
+
               {activeCall.demo ? <Text style={styles.webHoldHint}>All controls are simulated; no audio call is placed.</Text> : activeCall.session?.holdMode === 'mute' ? <Text style={styles.webHoldHint}>Browser hold mutes your microphone; mobile hold uses Twilio call hold.</Text> : null}
             </View>
           ) : showCallHistory ? (
@@ -787,4 +969,38 @@ const styles = StyleSheet.create({
   cancelAddCall: { color: blue, fontSize: 11, fontWeight: '600', paddingHorizontal: 8 },
   callButtonDisabled: { opacity: 0.45 },
   callError: { color: '#B42318', fontSize: 11, textAlign: 'center', paddingHorizontal: 10, paddingVertical: 6 },
+  transferModal: { width: '100%', maxWidth: 330, backgroundColor: '#FFFFFF', borderRadius: 10, borderWidth: 1, borderColor: border, padding: 16, marginTop: 8, gap: 10 },
+  transferModalTitle: { color: dark, fontSize: 15, fontWeight: '700', textAlign: 'center' },
+  transferModalHint: { color: muted, fontSize: 11, textAlign: 'center' },
+  transferInputRow: { flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: border, borderRadius: 6, paddingHorizontal: 10, backgroundColor: '#F8FAFB' },
+  transferInput: { flex: 1, height: 42, fontSize: 15, color: dark, outlineStyle: 'none' } as never,
+  transferActions: { flexDirection: 'row', gap: 8, justifyContent: 'flex-end', marginTop: 4 },
+  transferCancelBtn: { minHeight: 36, justifyContent: 'center', paddingHorizontal: 14, borderWidth: 1, borderColor: border, borderRadius: 6 },
+  transferCancelText: { color: muted, fontSize: 12, fontWeight: '600' },
+  transferConfirmBtn: { minHeight: 36, justifyContent: 'center', paddingHorizontal: 16, borderRadius: 6, backgroundColor: blue },
+  transferConfirmText: { color: '#FFFFFF', fontSize: 12, fontWeight: '700' },
+  // ── CRM Analytics ──────────────────────────────────────────────────────────
+  crmScroll: { flex: 1 },
+  crmContent: { padding: 12, gap: 8, paddingBottom: 20 },
+  crmHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 },
+  crmTitle: { color: dark, fontSize: 15, fontWeight: '700' },
+  crmRefreshing: { color: muted, fontSize: 10 },
+  crmError: { color: '#B42318', fontSize: 11, padding: 6, backgroundColor: '#FEF2F2', borderRadius: 5 },
+  crmSectionLabel: { color: blue, fontSize: 12, fontWeight: '700', marginTop: 8, marginBottom: 4 },
+  crmStatRow: { flexDirection: 'row', gap: 7, flexWrap: 'wrap' },
+  crmStatCard: { flex: 1, minWidth: 80, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: border, borderRadius: 8, padding: 10, alignItems: 'center', gap: 3 },
+  crmStatValue: { color: blue, fontSize: 20, fontWeight: '800' },
+  crmStatLabel: { color: muted, fontSize: 9, fontWeight: '600', textAlign: 'center' },
+  crmBarChart: { flexDirection: 'row', alignItems: 'flex-end', height: 90, gap: 4, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: border, borderRadius: 8, padding: 10, paddingBottom: 24 },
+  crmBarCol: { flex: 1, alignItems: 'center', height: '100%', justifyContent: 'flex-end' },
+  crmBarCount: { color: muted, fontSize: 8, marginBottom: 2 },
+  crmBarTrack: { width: '70%', flex: 1, backgroundColor: '#F0F4F7', borderRadius: 3, overflow: 'hidden', justifyContent: 'flex-end' },
+  crmBarFill: { width: '100%', backgroundColor: blue, borderRadius: 3 },
+  crmBarLabel: { color: muted, fontSize: 8, fontWeight: '600', position: 'absolute', bottom: 0 },
+  crmTopNumRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: '#F0F1F2' },
+  crmTopNumRank: { color: muted, fontSize: 11, fontWeight: '700', width: 22 },
+  crmTopNumVal: { flex: 1, color: dark, fontSize: 12, fontWeight: '600' },
+  crmTopNumBadge: { backgroundColor: '#EEF7FC', borderRadius: 10, paddingHorizontal: 8, paddingVertical: 2 },
+  crmTopNumBadgeText: { color: blue, fontSize: 10, fontWeight: '700' },
+  crmFootnote: { color: '#B0B8BE', fontSize: 9, textAlign: 'center', marginTop: 10 },
 });

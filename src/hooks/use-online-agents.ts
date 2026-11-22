@@ -31,7 +31,7 @@ export function useOnlineAgents() {
     };
 
     void refresh();
-    const interval = setInterval(refresh, 15_000);
+    const interval = setInterval(refresh, 5_000);
     return () => {
       active = false;
       clearInterval(interval);

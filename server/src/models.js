@@ -46,6 +46,9 @@ const messageSchema = new mongoose.Schema({
   providerMessageId: { type: String, unique: true, sparse: true },
   text: { type: String, default: '', maxlength: 4000 },
   attachment: { type: attachmentSchema, default: null },
+  isDeleted: { type: Boolean, default: false },
+  isEdited: { type: Boolean, default: false },
+  editedAt: { type: Date, default: null },
 }, { timestamps: true });
 
 const callLogSchema = new mongoose.Schema({

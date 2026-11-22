@@ -17,6 +17,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useOnlineAgents } from '@/hooks/use-online-agents';
 import {
   apiRequest,
+  deleteChatMessage,
+  deleteConversationThread,
+  editChatMessage,
   getAssetUrl,
   uploadAttachment,
   type ChatMessage,
@@ -200,6 +203,11 @@ export default function ChatsScreen() {
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
 
+  // Edit & Delete state
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
+  const [deletingConversation, setDeletingConversation] = useState(false);
+
   // Voice note recording state
   const [recordingVoice, setRecordingVoice] = useState(false);
   const [recordingDuration, setRecordingDuration] = useState(0);
@@ -278,6 +286,7 @@ export default function ChatsScreen() {
       if (file) {
         setSelectedAttachment(file);
         setShowEmojiPicker(false);
+        setEditingMessageId(null);
       }
     } catch (pickerError) {
       setError(pickerError instanceof Error ? pickerError.message : 'Could not pick file.');
@@ -303,6 +312,7 @@ export default function ChatsScreen() {
       setRecordingVoice(true);
       setRecordingDuration(0);
       setShowEmojiPicker(false);
+      setEditingMessageId(null);
       setError('');
 
       if (recordTimerRef.current) clearInterval(recordTimerRef.current);
@@ -398,7 +408,90 @@ export default function ChatsScreen() {
     }
   }
 
+  function handleStartEdit(item: ChatMessage) {
+    setEditingMessageId(item.id);
+    setMessage(item.text);
+    setSelectedAttachment(null);
+    setShowEmojiPicker(false);
+  }
+
+  function handleCancelEdit() {
+    setEditingMessageId(null);
+    setMessage('');
+  }
+
+  async function handleSaveEdit() {
+    const text = message.trim();
+    if (!token || !activeId || !editingMessageId || !text || sending) return;
+    setSending(true);
+    setError('');
+    try {
+      const updated = await editChatMessage(activeId, editingMessageId, text, token);
+      setMessages((current) =>
+        current.map((msg) =>
+          msg.id === editingMessageId
+            ? { ...msg, text: updated.text, isEdited: true, editedAt: updated.editedAt }
+            : msg
+        )
+      );
+      setEditingMessageId(null);
+      setMessage('');
+      void refreshConversations();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not edit message.');
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function handleDeleteMessage(messageId: string) {
+    if (!token || !activeId || deletingMessageId) return;
+    if (typeof window !== 'undefined' && !window.confirm('Delete this message for everyone?')) {
+      return;
+    }
+    setDeletingMessageId(messageId);
+    try {
+      await deleteChatMessage(activeId, messageId, token);
+      setMessages((current) =>
+        current.map((msg) =>
+          msg.id === messageId
+            ? { ...msg, isDeleted: true, text: 'This message was deleted', attachment: null }
+            : msg
+        )
+      );
+      void refreshConversations();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not delete message.');
+    } finally {
+      setDeletingMessageId(null);
+    }
+  }
+
+  async function handleDeleteConversation() {
+    if (!token || !activeId || deletingConversation) return;
+    if (typeof window !== 'undefined' && !window.confirm('Are you sure you want to delete this entire chat conversation?')) {
+      return;
+    }
+    setDeletingConversation(true);
+    try {
+      await deleteConversationThread(activeId, token);
+      setActiveId('');
+      setSelectedConversationId('');
+      setMessages([]);
+      void refreshConversations();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not delete conversation.');
+    } finally {
+      setDeletingConversation(false);
+    }
+  }
+
   async function sendMessage() {
+    if (editingMessageId) {
+      await handleSaveEdit();
+      return;
+    }
+
     const text = message.trim();
     if (!token || !activeId || (!text && !selectedAttachment) || sending) return;
     setSending(true);
@@ -560,6 +653,18 @@ export default function ChatsScreen() {
                     : 'Relay Internal Agent Chat'}
                 </Text>
               </View>
+
+              {/* Delete Entire Chat Thread */}
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Delete entire chat"
+                disabled={deletingConversation}
+                onPress={() => { void handleDeleteConversation(); }}
+                style={styles.deleteChatBtn}>
+                <Text style={styles.deleteChatBtnText}>
+                  {deletingConversation ? 'Deleting…' : '🗑️ Delete Chat'}
+                </Text>
+              </Pressable>
             </View>
 
             <ScrollView contentContainerStyle={styles.messageList}>
@@ -586,88 +691,135 @@ export default function ChatsScreen() {
 
                   return (
                     <View key={item.id} style={[styles.messageRow, ownMessage && styles.ownMessageRow]}>
-                      <View style={[styles.bubble, ownMessage ? styles.ownBubble : styles.otherBubble]}>
-                        {!ownMessage && <Text style={styles.senderName}>{item.senderName}</Text>}
+                      <View
+                        style={[
+                          styles.bubble,
+                          ownMessage ? styles.ownBubble : styles.otherBubble,
+                          item.isDeleted && (ownMessage ? styles.ownBubbleDeleted : styles.otherBubbleDeleted),
+                        ]}>
+                        {!ownMessage && !item.isDeleted && <Text style={styles.senderName}>{item.senderName}</Text>}
 
-                        {/* Image Attachment */}
-                        {hasAttachment && isImage && item.attachment && (
-                          <Pressable
-                            onPress={() => {
-                              const url = getAssetUrl(item.attachment!.url);
-                              if (Platform.OS === 'web' && typeof window !== 'undefined') {
-                                window.open(url, '_blank');
-                              } else {
-                                void Linking.openURL(url);
-                              }
-                            }}
-                            style={styles.imageAttachmentContainer}>
-                            <Image
-                              source={{ uri: getAssetUrl(item.attachment.url) }}
-                              style={styles.imageAttachment}
-                              resizeMode="cover"
-                            />
-                          </Pressable>
-                        )}
-
-                        {/* Voice Note Player */}
-                        {hasAttachment && isAudio && item.attachment && (
-                          <VoiceNotePlayer
-                            url={getAssetUrl(item.attachment.url)}
-                            isOwn={ownMessage}
-                          />
-                        )}
-
-                        {/* Document/File Attachment */}
-                        {hasAttachment && !isImage && !isAudio && item.attachment && (
-                          <Pressable
-                            onPress={() => {
-                              const url = getAssetUrl(item.attachment!.url);
-                              if (Platform.OS === 'web' && typeof window !== 'undefined') {
-                                window.open(url, '_blank');
-                              } else {
-                                void Linking.openURL(url);
-                              }
-                            }}
-                            style={[
-                              styles.fileAttachmentCard,
-                              ownMessage ? styles.ownFileCard : styles.otherFileCard,
-                            ]}>
-                            <Text style={styles.fileIcon}>📄</Text>
-                            <View style={styles.fileDetails}>
-                              <Text
-                                numberOfLines={1}
-                                style={[styles.fileName, ownMessage && styles.ownFileName]}>
-                                {item.attachment.fileName}
-                              </Text>
-                              <Text style={[styles.fileMeta, ownMessage && styles.ownFileMeta]}>
-                                {item.attachment.fileSize
-                                  ? formatFileSize(item.attachment.fileSize)
-                                  : 'Document'}{' '}
-                                · Tap to open
-                              </Text>
-                            </View>
-                          </Pressable>
-                        )}
-
-                        {/* Message Text */}
-                        {!!item.text && (
+                        {item.isDeleted ? (
                           <Text
                             style={[
-                              styles.messageText,
-                              ownMessage && styles.ownMessageText,
-                              hasAttachment && styles.messageWithAttachment,
+                              styles.deletedMessageText,
+                              ownMessage ? styles.ownDeletedText : styles.otherDeletedText,
                             ]}>
-                            {item.text}
+                            🚫 This message was deleted
                           </Text>
+                        ) : (
+                          <>
+                            {/* Image Attachment */}
+                            {hasAttachment && isImage && item.attachment && (
+                              <Pressable
+                                onPress={() => {
+                                  const url = getAssetUrl(item.attachment!.url);
+                                  if (Platform.OS === 'web' && typeof window !== 'undefined') {
+                                    window.open(url, '_blank');
+                                  } else {
+                                    void Linking.openURL(url);
+                                  }
+                                }}
+                                style={styles.imageAttachmentContainer}>
+                                <Image
+                                  source={{ uri: getAssetUrl(item.attachment.url) }}
+                                  style={styles.imageAttachment}
+                                  resizeMode="cover"
+                                />
+                              </Pressable>
+                            )}
+
+                            {/* Voice Note Player */}
+                            {hasAttachment && isAudio && item.attachment && (
+                              <VoiceNotePlayer
+                                url={getAssetUrl(item.attachment.url)}
+                                isOwn={ownMessage}
+                              />
+                            )}
+
+                            {/* Document/File Attachment */}
+                            {hasAttachment && !isImage && !isAudio && item.attachment && (
+                              <Pressable
+                                onPress={() => {
+                                  const url = getAssetUrl(item.attachment!.url);
+                                  if (Platform.OS === 'web' && typeof window !== 'undefined') {
+                                    window.open(url, '_blank');
+                                  } else {
+                                    void Linking.openURL(url);
+                                  }
+                                }}
+                                style={[
+                                  styles.fileAttachmentCard,
+                                  ownMessage ? styles.ownFileCard : styles.otherFileCard,
+                                ]}>
+                                <Text style={styles.fileIcon}>📄</Text>
+                                <View style={styles.fileDetails}>
+                                  <Text
+                                    numberOfLines={1}
+                                    style={[styles.fileName, ownMessage && styles.ownFileName]}>
+                                    {item.attachment.fileName}
+                                  </Text>
+                                  <Text style={[styles.fileMeta, ownMessage && styles.ownFileMeta]}>
+                                    {item.attachment.fileSize
+                                      ? formatFileSize(item.attachment.fileSize)
+                                      : 'Document'}{' '}
+                                    · Tap to open
+                                  </Text>
+                                </View>
+                              </Pressable>
+                            )}
+
+                            {/* Message Text */}
+                            {!!item.text && (
+                              <Text
+                                style={[
+                                  styles.messageText,
+                                  ownMessage && styles.ownMessageText,
+                                  hasAttachment && styles.messageWithAttachment,
+                                ]}>
+                                {item.text}
+                              </Text>
+                            )}
+                          </>
                         )}
 
-                        <Text style={[styles.timestamp, ownMessage && styles.ownTimestamp]}>
-                          {new Date(item.createdAt).toLocaleTimeString([], {
-                            hour: 'numeric',
-                            minute: '2-digit',
-                          })}
-                        </Text>
+                        <View style={styles.bubbleFooter}>
+                          {item.isEdited && !item.isDeleted && (
+                            <Text style={[styles.editedIndicator, ownMessage && styles.ownEditedIndicator]}>
+                              edited
+                            </Text>
+                          )}
+                          <Text style={[styles.timestamp, ownMessage && styles.ownTimestamp]}>
+                            {new Date(item.createdAt).toLocaleTimeString([], {
+                              hour: 'numeric',
+                              minute: '2-digit',
+                            })}
+                          </Text>
+                        </View>
                       </View>
+
+                      {/* Action buttons (Edit & Delete) for own messages */}
+                      {ownMessage && !item.isDeleted && (
+                        <View style={styles.msgActionRow}>
+                          {Boolean(item.text && !item.attachment?.fileType?.startsWith('audio/')) && (
+                            <Pressable
+                              accessibilityRole="button"
+                              accessibilityLabel="Edit message"
+                              onPress={() => handleStartEdit(item)}
+                              style={styles.msgActionBtn}>
+                              <Text style={styles.msgActionBtnText}>✏️</Text>
+                            </Pressable>
+                          )}
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel="Delete message"
+                            disabled={deletingMessageId === item.id}
+                            onPress={() => { void handleDeleteMessage(item.id); }}
+                            style={styles.msgActionBtn}>
+                            <Text style={styles.msgActionBtnText}>🗑️</Text>
+                          </Pressable>
+                        </View>
+                      )}
                     </View>
                   );
                 })
@@ -697,6 +849,19 @@ export default function ChatsScreen() {
                     <Text style={styles.attachmentRemoveText}>✕</Text>
                   </Pressable>
                 </View>
+              </View>
+            )}
+
+            {/* Editing Message Banner */}
+            {editingMessageId && (
+              <View style={styles.editingBanner}>
+                <View style={styles.editingBannerContent}>
+                  <Text style={styles.editingBannerIcon}>✏️</Text>
+                  <Text style={styles.editingBannerText}>Editing message</Text>
+                </View>
+                <Pressable onPress={handleCancelEdit} style={styles.cancelEditBtn}>
+                  <Text style={styles.cancelEditText}>✕ Cancel</Text>
+                </Pressable>
               </View>
             )}
 
@@ -758,13 +923,15 @@ export default function ChatsScreen() {
             ) : (
               <View style={styles.composer}>
                 {/* Attachment Button */}
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Attach file"
-                  onPress={() => { void handlePickAttachment(); }}
-                  style={styles.composerIconBtn}>
-                  <Text style={styles.composerIconText}>📎</Text>
-                </Pressable>
+                {!editingMessageId && (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Attach file"
+                    onPress={() => { void handlePickAttachment(); }}
+                    style={styles.composerIconBtn}>
+                    <Text style={styles.composerIconText}>📎</Text>
+                  </Pressable>
+                )}
 
                 {/* Emoji Button */}
                 <Pressable
@@ -779,33 +946,46 @@ export default function ChatsScreen() {
                   accessibilityLabel="Message"
                   onChangeText={setMessage}
                   onSubmitEditing={() => { void sendMessage(); }}
-                  placeholder={selectedAttachment ? 'Add a caption (optional)' : 'Write a message'}
+                  placeholder={
+                    editingMessageId
+                      ? 'Edit your message…'
+                      : selectedAttachment
+                      ? 'Add a caption (optional)'
+                      : 'Write a message'
+                  }
                   placeholderTextColor="#A2ABB1"
                   style={styles.input}
                   value={message}
                 />
 
-                {/* Voice Note Record Button */}
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Record voice note"
-                  onPress={() => { void startVoiceRecording(); }}
-                  style={styles.micButton}>
-                  <Text style={styles.micButtonText}>🎙️</Text>
-                </Pressable>
+                {/* Voice Note Record Button (hidden when editing) */}
+                {!editingMessageId && (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Record voice note"
+                    onPress={() => { void startVoiceRecording(); }}
+                    style={styles.micButton}>
+                    <Text style={styles.micButtonText}>🎙️</Text>
+                  </Pressable>
+                )}
 
-                {/* Send Button */}
+                {/* Send / Save Button */}
                 <Pressable
                   accessibilityRole="button"
-                  accessibilityLabel="Send message"
+                  accessibilityLabel={editingMessageId ? 'Save edit' : 'Send message'}
                   disabled={(!message.trim() && !selectedAttachment) || sending}
                   onPress={() => { void sendMessage(); }}
                   style={[
                     styles.sendButton,
+                    editingMessageId && styles.saveEditButton,
                     ((!message.trim() && !selectedAttachment) || sending) && styles.sendButtonDisabled,
                   ]}>
                   <Text style={styles.sendText}>
-                    {sending ? (uploadingAttachment ? 'Uploading…' : 'Sending…') : 'Send'}
+                    {sending
+                      ? (uploadingAttachment ? 'Uploading…' : 'Saving…')
+                      : editingMessageId
+                      ? '✓ Save'
+                      : 'Send'}
                   </Text>
                 </Pressable>
               </View>
@@ -940,18 +1120,77 @@ const styles = StyleSheet.create({
   threadSubtitle: { color: muted, fontSize: 10 },
   backButton: { minHeight: 36, justifyContent: 'center', paddingRight: 6 },
   backText: { color: blue, fontSize: 13, fontWeight: '600' },
+  deleteChatBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    backgroundColor: '#FEE2E2',
+    borderWidth: 1,
+    borderColor: '#FCA5A5',
+  },
+  deleteChatBtnText: {
+    color: '#B91C1C',
+    fontSize: 11,
+    fontWeight: '700',
+  },
   messageList: { flexGrow: 1, justifyContent: 'flex-end', padding: 14, gap: 9 },
-  messageRow: { flexDirection: 'row', justifyContent: 'flex-start' },
+  messageRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 6, justifyContent: 'flex-start' },
   ownMessageRow: { justifyContent: 'flex-end' },
   bubble: { maxWidth: '82%', minWidth: 80, paddingHorizontal: 11, paddingVertical: 8, borderRadius: 8 },
   ownBubble: { backgroundColor: blue },
   otherBubble: { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: border },
+  ownBubbleDeleted: { backgroundColor: '#E2E8F0', borderWidth: 1, borderColor: '#CBD5E1' },
+  otherBubbleDeleted: { backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: '#E2E8F0' },
+  deletedMessageText: { fontSize: 12, fontStyle: 'italic', lineHeight: 18 },
+  ownDeletedText: { color: '#475569' },
+  otherDeletedText: { color: '#64748B' },
   senderName: { color: blue, fontSize: 10, fontWeight: '700', marginBottom: 3 },
   messageText: { color: dark, fontSize: 13, lineHeight: 19 },
   ownMessageText: { color: '#FFFFFF' },
   messageWithAttachment: { marginTop: 6 },
-  timestamp: { color: muted, fontSize: 9, textAlign: 'right', marginTop: 4 },
+  bubbleFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 5,
+    marginTop: 4,
+  },
+  editedIndicator: {
+    fontSize: 9,
+    fontStyle: 'italic',
+    color: muted,
+  },
+  ownEditedIndicator: {
+    color: '#D8F0FC',
+  },
+  timestamp: { color: muted, fontSize: 9 },
   ownTimestamp: { color: '#D8F0FC' },
+
+  /* Action buttons for own messages */
+  msgActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    marginBottom: 4,
+  },
+  msgActionBtn: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  msgActionBtnText: {
+    fontSize: 12,
+  },
 
   /* Image Attachment */
   imageAttachmentContainer: {
@@ -1090,6 +1329,32 @@ const styles = StyleSheet.create({
     paddingTop: 6,
     backgroundColor: '#FFFFFF',
   },
+
+  /* Editing Banner */
+  editingBanner: {
+    backgroundColor: '#FEF3C7',
+    borderTopWidth: 1,
+    borderTopColor: '#FDE68A',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  editingBannerContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  editingBannerIcon: { fontSize: 14 },
+  editingBannerText: { color: '#92400E', fontSize: 12, fontWeight: '700' },
+  cancelEditBtn: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    backgroundColor: '#FDE68A',
+    borderRadius: 4,
+  },
+  cancelEditText: { color: '#78350F', fontSize: 11, fontWeight: '700' },
 
   attachmentPreviewBar: {
     backgroundColor: '#FFFFFF',
@@ -1283,6 +1548,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 12,
+  },
+  saveEditButton: {
+    backgroundColor: '#D97706',
   },
   sendButtonDisabled: { opacity: 0.45 },
   sendText: { color: '#FFFFFF', fontSize: 12, fontWeight: '600' },

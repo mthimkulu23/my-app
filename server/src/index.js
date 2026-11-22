@@ -461,7 +461,9 @@ app.put('/api/presence', requireAuth, asyncRoute(async (req, res) => {
 }));
 
 app.post('/api/presence/offline', requireAuth, asyncRoute(async (req, res) => {
-  const user = await User.findByIdAndUpdate(req.userId, { $set: { 'presence.online': false } });
+  const user = await User.findByIdAndUpdate(req.userId, {
+    $set: { 'presence.online': false, 'presence.lastSeenAt': new Date(0) },
+  });
   if (user && user.role === 'agent') {
     const shift = await AgentShift.findOne({ agentId: req.userId, status: 'active' }).sort({ loginAt: -1 });
     if (shift) {
@@ -632,10 +634,93 @@ app.get('/api/conversations/:conversationId/messages', requireAuth, asyncRoute(a
     senderId: message.senderId?.id || null,
     senderName: message.senderId?.displayName || message.senderName,
     direction: message.direction,
-    text: message.text || '',
-    attachment: message.attachment || null,
+    text: message.isDeleted ? 'This message was deleted' : (message.text || ''),
+    attachment: message.isDeleted ? null : (message.attachment || null),
+    isDeleted: Boolean(message.isDeleted),
+    isEdited: Boolean(message.isEdited),
+    editedAt: message.editedAt || null,
     createdAt: message.createdAt,
   })));
+}));
+
+app.patch('/api/conversations/:conversationId/messages/:messageId', requireAuth, asyncRoute(async (req, res) => {
+  const conversation = await findAccessibleConversation(req.params.conversationId, req.userId);
+  if (!conversation) return res.status(404).json({ error: 'Conversation not found' });
+  if (!mongoose.isValidObjectId(req.params.messageId)) return res.status(404).json({ error: 'Message not found' });
+
+  const message = await Message.findOne({ _id: req.params.messageId, conversationId: conversation.id });
+  if (!message) return res.status(404).json({ error: 'Message not found' });
+
+  if (String(message.senderId) !== String(req.userId)) {
+    return res.status(403).json({ error: 'You can only edit your own messages' });
+  }
+  if (message.isDeleted) {
+    return res.status(400).json({ error: 'Cannot edit a deleted message' });
+  }
+
+  const { text } = parse(z.object({ text: z.string().trim().min(1).max(4000) }).strict(), req.body);
+  message.text = text;
+  message.isEdited = true;
+  message.editedAt = new Date();
+  await message.save();
+
+  const latestMessage = await Message.findOne({ conversationId: conversation.id }).sort({ createdAt: -1 });
+  if (latestMessage && String(latestMessage._id) === String(message._id)) {
+    conversation.lastMessageText = text;
+    await conversation.save();
+  }
+
+  return res.json({
+    id: message.id,
+    senderId: req.userId,
+    senderName: message.senderName,
+    direction: message.direction,
+    text: message.text,
+    attachment: message.attachment,
+    isDeleted: false,
+    isEdited: true,
+    editedAt: message.editedAt,
+    createdAt: message.createdAt,
+  });
+}));
+
+app.delete('/api/conversations/:conversationId/messages/:messageId', requireAuth, asyncRoute(async (req, res) => {
+  const conversation = await findAccessibleConversation(req.params.conversationId, req.userId);
+  if (!conversation) return res.status(404).json({ error: 'Conversation not found' });
+  if (!mongoose.isValidObjectId(req.params.messageId)) return res.status(404).json({ error: 'Message not found' });
+
+  const message = await Message.findOne({ _id: req.params.messageId, conversationId: conversation.id });
+  if (!message) return res.status(404).json({ error: 'Message not found' });
+
+  if (String(message.senderId) !== String(req.userId)) {
+    return res.status(403).json({ error: 'You can only delete your own messages' });
+  }
+
+  message.isDeleted = true;
+  message.text = 'This message was deleted';
+  message.attachment = null;
+  await message.save();
+
+  const latestMessage = await Message.findOne({ conversationId: conversation.id }).sort({ createdAt: -1 });
+  if (latestMessage && String(latestMessage._id) === String(message._id)) {
+    conversation.lastMessageText = 'This message was deleted';
+    await conversation.save();
+  }
+
+  return res.json({
+    id: message.id,
+    isDeleted: true,
+    text: 'This message was deleted',
+  });
+}));
+
+app.delete('/api/conversations/:conversationId', requireAuth, asyncRoute(async (req, res) => {
+  const conversation = await findAccessibleConversation(req.params.conversationId, req.userId);
+  if (!conversation) return res.status(404).json({ error: 'Conversation not found' });
+
+  await Message.deleteMany({ conversationId: conversation.id });
+  await Conversation.deleteOne({ _id: conversation.id });
+  return res.json({ success: true, id: req.params.conversationId });
 }));
 
 app.post('/api/conversations/:conversationId/messages', requireAuth, asyncRoute(async (req, res) => {
@@ -698,6 +783,113 @@ app.post('/api/conversations/:conversationId/messages', requireAuth, asyncRoute(
     text,
     attachment: message.attachment,
     createdAt: message.createdAt,
+  });
+}));
+
+// ── Analytics Dashboard ────────────────────────────────────────────────────
+app.get('/api/analytics', requireAuth, asyncRoute(async (req, res) => {
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfWeek = new Date(startOfToday);
+  startOfWeek.setDate(startOfToday.getDate() - startOfToday.getDay()); // Sunday
+  const startOf30Days = new Date(now);
+  startOf30Days.setDate(now.getDate() - 29);
+  startOf30Days.setHours(0, 0, 0, 0);
+
+  // Calls owned by this agent in the last 30 days
+  const recentCalls = await CallLog.find({
+    ownerId: req.userId,
+    startedAt: { $gte: startOf30Days },
+  }).select('status direction mode startedAt durationSeconds to from').lean();
+
+  const completedCalls = recentCalls.filter((c) => c.status === 'completed' || c.status === 'in-progress');
+
+  // Calls today
+  const callsToday = recentCalls.filter((c) => new Date(c.startedAt) >= startOfToday).length;
+  // Calls this week
+  const callsThisWeek = recentCalls.filter((c) => new Date(c.startedAt) >= startOfWeek).length;
+  // Calls total (last 30 days)
+  const callsLast30 = recentCalls.length;
+
+  // Average call duration (completed only)
+  const totalDuration = completedCalls.reduce((sum, c) => sum + (c.durationSeconds || 0), 0);
+  const avgDuration = completedCalls.length ? Math.round(totalDuration / completedCalls.length) : 0;
+
+  // Calls by day (last 7 days)
+  const callsByDay = [];
+  for (let i = 6; i >= 0; i--) {
+    const dayStart = new Date(startOfToday);
+    dayStart.setDate(startOfToday.getDate() - i);
+    const dayEnd = new Date(dayStart);
+    dayEnd.setDate(dayStart.getDate() + 1);
+    const label = dayStart.toLocaleDateString('en-ZA', { weekday: 'short' });
+    const count = recentCalls.filter((c) => {
+      const d = new Date(c.startedAt);
+      return d >= dayStart && d < dayEnd;
+    }).length;
+    callsByDay.push({ label, count });
+  }
+
+  // Busiest hour today
+  const hourCounts = {};
+  recentCalls.filter((c) => new Date(c.startedAt) >= startOfToday).forEach((c) => {
+    const h = new Date(c.startedAt).getHours();
+    hourCounts[h] = (hourCounts[h] || 0) + 1;
+  });
+  const busiestHour = Object.entries(hourCounts).sort((a, b) => b[1] - a[1])[0];
+  const busiestHourLabel = busiestHour ? `${busiestHour[0].padStart(2, '0')}:00` : null;
+
+  // Top 5 dialled numbers
+  const numberCount = {};
+  recentCalls.filter((c) => c.direction === 'outbound').forEach((c) => {
+    const num = c.to || 'Unknown';
+    numberCount[num] = (numberCount[num] || 0) + 1;
+  });
+  const topNumbers = Object.entries(numberCount)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([number, count]) => ({ number, count }));
+
+  // WhatsApp / internal chat inquiries (last 30 days) — global for all agents
+  const thirtyDaysAgo = startOf30Days;
+  const whatsappToday = await Conversation.countDocuments({
+    channel: 'whatsapp',
+    lastInboundAt: { $gte: startOfToday },
+  });
+  const whatsappThisWeek = await Conversation.countDocuments({
+    channel: 'whatsapp',
+    lastInboundAt: { $gte: startOfWeek },
+  });
+  const whatsappLast30 = await Conversation.countDocuments({
+    channel: 'whatsapp',
+    lastInboundAt: { $gte: thirtyDaysAgo },
+  });
+  const internalChatsLast30 = await Conversation.countDocuments({
+    channel: 'internal',
+    createdAt: { $gte: thirtyDaysAgo },
+  });
+  const openInquiries = await Conversation.countDocuments({
+    channel: 'whatsapp',
+    status: { $in: ['waiting', 'assigned'] },
+  });
+
+  return res.json({
+    calls: {
+      today: callsToday,
+      thisWeek: callsThisWeek,
+      last30Days: callsLast30,
+      avgDurationSeconds: avgDuration,
+      busiestHour: busiestHourLabel,
+      byDay: callsByDay,
+      topNumbers,
+    },
+    inquiries: {
+      whatsappToday,
+      whatsappThisWeek,
+      whatsappLast30,
+      internalChatsLast30,
+      openInquiries,
+    },
   });
 }));
 
@@ -770,6 +962,29 @@ app.post('/api/calls/token', requireAuth, callLimiter, asyncRoute(async (req, re
     incomingAllow: false,
   }));
   return res.json({ token: token.toJwt(), identity, expiresIn: 3600 });
+}));
+
+app.post('/api/calls/transfer', requireAuth, asyncRoute(async (req, res) => {
+  requireTwilioConfig();
+  const { callSid, destination } = parse(z.object({
+    callSid: z.string().trim().min(1).max(64),
+    destination: z.string().trim().regex(/^\+?[1-9]\d{7,14}$/, 'Invalid destination number'),
+  }).strict(), req.body);
+  // Look up the call log to confirm ownership
+  const callLog = await CallLog.findOne({ callSid, ownerId: req.userId }).select('_id callSid status');
+  if (!callLog) return res.status(404).json({ error: 'Call not found' });
+  if (!callSid.startsWith('CA')) return res.status(400).json({ error: 'Invalid call SID for transfer' });
+
+  const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+  // Build a TwiML redirect that dials the new destination
+  const twiml = new twilio.twiml.VoiceResponse();
+  const dial = twiml.dial({ callerId: process.env.TWILIO_CALLER_ID });
+  dial.number(destination);
+  // Update the live call with a TwiML redirect
+  await twilioClient.calls(callSid).update({ twiml: twiml.toString() });
+  // Mark the original leg as transferred in the call log
+  await CallLog.updateOne({ _id: callLog._id }, { $set: { status: 'completed', endedAt: new Date() } });
+  return res.json({ success: true, transferredTo: destination });
 }));
 
 app.post('/webhooks/twilio/voice', asyncRoute(async (req, res) => {
