@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
+import { apiRequest } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 
 const blue = '#168FD0';
@@ -9,21 +10,32 @@ const muted = '#7E8A92';
 const border = '#DDE3E7';
 
 export function AuthScreen() {
-  const { signIn, signUp } = useAuth();
+  const { signIn } = useAuth();
   const [registering, setRegistering] = useState(false);
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
+  const [successMessage, setSuccessMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
   async function submit() {
     setError('');
+    setSuccessMessage('');
     setSubmitting(true);
     try {
-      if (registering) await signUp(displayName.trim(), email.trim(), password);
-      else await signIn(email.trim(), password);
+      if (registering) {
+        await apiRequest('/auth/register', {
+          method: 'POST',
+          body: JSON.stringify({ displayName: displayName.trim(), email: email.trim(), password }),
+        });
+        setRegistering(false);
+        setPassword('');
+        setSuccessMessage('Account created successfully! Please sign in with your password.');
+      } else {
+        await signIn(email.trim(), password);
+      }
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Unable to sign in.');
     } finally {
@@ -97,11 +109,12 @@ export function AuthScreen() {
             </View>
             {registering && <Text style={styles.helper}>Use at least 12 characters.</Text>}
             {!!error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
+            {!!successMessage && <Text accessibilityRole="alert" style={styles.success}>{successMessage}</Text>}
             <Pressable accessibilityRole="button" disabled={submitting} onPress={submit} style={[styles.submit, submitting && styles.disabled]}>
               <Text style={styles.submitText}>{submitting ? 'Please wait…' : registering ? 'Create account' : 'Sign in'}</Text>
               {!submitting && <Text style={styles.submitArrow}>→</Text>}
             </Pressable>
-            <Pressable onPress={() => { setError(''); setRegistering((value) => !value); }} style={styles.modeToggle}>
+            <Pressable onPress={() => { setError(''); setSuccessMessage(''); setRegistering((value) => !value); }} style={styles.modeToggle}>
               <Text style={styles.modeText}>{registering ? 'Already on the team? ' : 'New to Relay? '}</Text>
               <Text style={styles.modeAction}>{registering ? 'Sign in' : 'Create account'}</Text>
             </Pressable>
@@ -142,6 +155,7 @@ const styles = StyleSheet.create({
   passwordToggleText: { color: '#9CCFFF', fontSize: 10, fontWeight: '700' },
   helper: { color: '#B9C9E5', fontSize: 12 },
   error: { color: '#FFD4D4', fontSize: 13, lineHeight: 19, paddingHorizontal: 12, paddingVertical: 9, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(255,130,130,0.35)', backgroundColor: 'rgba(102,18,40,0.4)' },
+  success: { color: '#E0FFE8', fontSize: 13, lineHeight: 19, paddingHorizontal: 12, paddingVertical: 9, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(80,220,120,0.4)', backgroundColor: 'rgba(12,80,32,0.5)' },
   submit: {
     minHeight: 58,
     flexDirection: 'row',

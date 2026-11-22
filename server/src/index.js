@@ -245,20 +245,10 @@ app.post('/auth/register', authLimiter, asyncRoute(async (req, res) => {
     displayName: body.displayName,
     email,
     passwordHash: await bcrypt.hash(body.password, 12),
-    role: agentEmails.has(email) ? 'agent' : 'customer',
-    presence: { online: true, lastSeenAt: new Date() },
+    role: 'agent',
+    presence: { online: false, lastSeenAt: null },
   });
-  if (user.role === 'agent') {
-    await AgentShift.create({
-      agentId: user._id,
-      agentName: user.displayName,
-      email: user.email,
-      loginAt: new Date(),
-      status: 'active',
-    });
-    console.log(`[MANAGER NOTIFICATION] Agent registered & logged in: ${user.displayName} (${user.email}) at ${new Date().toLocaleTimeString()}`);
-  }
-  return res.status(201).json({ token: issueSession(user), user: { id: user.id, displayName: user.displayName, email: user.email, role: user.role } });
+  return res.status(201).json({ user: { id: user.id, displayName: user.displayName, email: user.email, role: user.role } });
 }));
 
 app.post('/auth/login', authLimiter, asyncRoute(async (req, res) => {
@@ -267,7 +257,7 @@ app.post('/auth/login', authLimiter, asyncRoute(async (req, res) => {
   if (!user || !(await bcrypt.compare(body.password, user.passwordHash))) {
     return res.status(401).json({ error: 'Email or password is incorrect' });
   }
-  if (agentEmails.has(user.email)) user.role = 'agent';
+  user.role = 'agent';
   user.presence = { online: true, lastSeenAt: new Date() };
   await user.save();
 

@@ -218,7 +218,7 @@ export default function HomeScreen() {
     }
     if (workspaceTab === 'Agents') {
       return (
-        <ScrollView style={styles.infoContent} contentContainerStyle={{ paddingBottom: 24 }}>
+        <ScrollView style={styles.agentsScroll} contentContainerStyle={styles.agentsScrollContent}>
           <Text style={styles.infoTitle}>Agents online ({agents.length})</Text>
           {agentsLoading && agents.length === 0 ? <Text style={styles.infoMeta}>Checking availability…</Text> : null}
           {!agentsLoading && agents.length === 0 ? <Text style={styles.infoMeta}>No agents are online</Text> : null}
@@ -714,6 +714,8 @@ const styles = StyleSheet.create({
   compactWorkspacePanel: { minHeight: 72 },
   emptyCrm: { flex: 1, minHeight: 110, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F7F7F7' },
   emptyCrmText: { color: '#727F88', fontSize: 14 },
+  agentsScroll: { flex: 1 },
+  agentsScrollContent: { paddingHorizontal: 18, paddingVertical: 14, gap: 6, paddingBottom: 28 },
   infoContent: { flex: 1, justifyContent: 'center', paddingHorizontal: 18, gap: 6 },
   infoTitle: { color: dark, fontSize: 14, fontWeight: '600' },
   infoLine: { color: '#52616A', fontSize: 12 },
